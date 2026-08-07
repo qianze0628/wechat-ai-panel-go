@@ -1,5 +1,12 @@
-Feat: 启动按钮等待健康检查 + 成功弹窗提示
+Fix: 启动弹窗 ✅ 图标错误 + 启动改为轮询等待健康
 
-- serviceAction: 启动后自动 refetch 确认状态 (1.8s 等待), 弹出 SuccessModal 告知启动成功
-- allAction: 启动全部后弹窗显示各服务状态 (✅/❌ + 明细)
-- 修复之前"服务已启动但 UI 要再点一次才变绿"的体验问题
+问题1: 弹窗显示 ❌ 但服务实际健康通过。
+原因: 后端 steps 返回 {service, ok: boolean}, 前端误用 s.status === 'ok' 判断,
+导致全部显示失败。已改为读 s.ok (布尔)。
+
+问题2: 点击启动后"要点两次"才变绿。
+原因: 后端 /api/start 同步等待健康检查 (astrbot 最长 60s), 请求阻塞期间 UI 不更新。
+修复: 后端 startOne 改为启动进程后立即返回; 前端点击后轮询 /api/services
+(每 1.5s), 服务逐个变绿, 全部健康后自动弹窗 (✅/❌ + 明细)。
+
+同时清理误追踪的临时文件 (release-notes-v011.md, .git-commit-msg.txt)。

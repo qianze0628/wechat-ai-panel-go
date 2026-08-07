@@ -184,24 +184,14 @@ func (h *Handler) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]any{"ok": !failed, "message": strings.Join(messages, " | "), "steps": steps})
 }
 
-// startOne 启动单个服务 (all 模式下带健康门控)
+// startOne 启动单个服务 (启动进程后立即返回; 健康检查交给前端轮询,
+// 避免 /api/start 同步阻塞数十秒导致前端"要点两次"体验)
 func (h *Handler) startOne(name string) (bool, string) {
 	ok, msg := h.svc.Start(name)
 	if !ok {
 		return false, msg
 	}
-	// 健康等待 (astrbot 60s, wechat 30s, qr 20s)
-	timeout := 30
-	switch name {
-	case "astrbot":
-		timeout = 60
-	case "qr":
-		timeout = 20
-	}
-	if !h.svc.WaitHealth(name, time.Duration(timeout)*time.Second) {
-		return false, msg + " (健康检查超时)"
-	}
-	return true, msg + " (健康通过)"
+	return true, msg + " (已启动, 健康检查中)"
 }
 
 // jsonErr 错误响应
