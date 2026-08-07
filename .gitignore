@@ -1,0 +1,19 @@
+# 本机配置 (含路径/密码)
+config.json
+config.local.json
+
+# 构建产物
+bin/
+dist/
+*.exe
+
+# Go 测试产物
+*.test
+coverage.out
+
+# 前端产物 (由 build 脚本从旧项目拷贝, 不提交)
+cmd/server/web/assets/
+
+# 系统
+Thumbs.db
+.DS_Store
