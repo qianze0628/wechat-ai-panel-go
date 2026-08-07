@@ -143,6 +143,14 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 			}
 		}
 		contacts := toAnySlice(data["contacts"])
+		// 给群补活跃发言者 (消息记录反推真实昵称)
+		for _, r := range rooms {
+			if rm, ok := r.(map[string]any); ok {
+				if nm, ok := rm["name"].(string); ok {
+					rm["activeNames"] = roomActiveMembers(cfg, nm)
+				}
+			}
+		}
 		jsonOK(w, map[string]any{"ok": true, "contacts": contacts, "rooms": rooms})
 	})
 
@@ -360,6 +368,47 @@ func historyRoomNames(cfg *config.Config) []string {
 		}
 	}
 	sort.Slice(names, func(i, j int) bool { return counts[names[i]] > counts[names[j]] })
+	return names
+}
+
+// roomActiveMembers 返回某群历史活跃发言者名 (按条数降序)
+func roomActiveMembers(cfg *config.Config, roomName string) []string {
+	path := filepath.Join(cfg.WechatBotDir, ".data", "wechat", "messages.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	counts := map[string]int{}
+	sc := newLineScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) != nil {
+			continue
+		}
+		if isRoom, _ := m["isRoom"].(bool); !isRoom {
+			continue
+		}
+		if rn, _ := m["roomName"].(string); rn != roomName {
+			continue
+		}
+		t, _ := m["talkerName"].(string)
+		if t != "" && t != roomName {
+			counts[t]++
+		}
+	}
+	names := make([]string, 0, len(counts))
+	for n := range counts {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return counts[names[i]] > counts[names[j]] })
+	if len(names) > 30 {
+		names = names[:30]
+	}
 	return names
 }
 
