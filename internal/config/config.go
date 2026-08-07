@@ -20,6 +20,7 @@ type Config struct {
 	AstrbotDataDir string     `json:"astrbot_data_dir"`
 	QrServerScript string     `json:"qr_server_script"`
 	WechatBotServe string     `json:"wechat_bot_serve"`
+	BackupDir      string     `json:"backup_dir"`
 	Logs           LogPaths   `json:"logs"`
 	Services       Services   `json:"services"`
 	Astrbot        AstrConfig `json:"astrbot"`

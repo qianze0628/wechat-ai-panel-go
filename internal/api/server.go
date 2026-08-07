@@ -19,16 +19,47 @@ type ServiceController interface {
 	WaitHealth(name string, timeout time.Duration) bool
 }
 
-// Handler 聚合路由
+// Handler 聚合路由 (ServeMux 模式)
 type Handler struct {
-	webFS   fs.FS   // 嵌入的前端静态资源 (dist)
-	upFn    func() any // 应用状态聚合 (由上层注入)
-	svc     ServiceController
+	webFS     fs.FS // 嵌入的前端静态资源 (dist)
+	mux       *http.ServeMux
+	upFn      func() any // 应用状态聚合
+	svc       ServiceController
+	authCheck func(r *http.Request) bool
 }
 
 // New 创建 HTTP handler
 func New(webFS fs.FS) *Handler {
-	return &Handler{webFS: webFS}
+	h := &Handler{webFS: webFS, mux: http.NewServeMux()}
+	// 静态 + SPA
+	h.mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		// 去掉 /static/ 前缀 (webSub 内路径是 assets/xxx)
+		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/"), "static/")
+		serveFS(w, r, h.webFS, name)
+	})
+	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// API 未匹配则 SPA
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		serveIndex(w, h.webFS)
+	})
+	// 基础 API
+	h.mux.HandleFunc("/api/status", h.handleStatus)
+	h.mux.HandleFunc("/api/start", h.handleServiceControl)
+	h.mux.HandleFunc("/api/stop", h.handleServiceControl)
+	h.mux.HandleFunc("/api/restart", h.handleServiceControl)
+	// 插件列表 (Go 版无动态插件, 返回空; 前端兼容)
+	h.mux.HandleFunc("/api/plugins", func(w http.ResponseWriter, r *http.Request) {
+		jsonOK(w, map[string]any{"ok": true, "plugins": []any{}})
+	})
+	return h
+}
+
+// HandleFunc 注册 API 路由 (精确匹配)
+func (h *Handler) HandleFunc(pattern string, fn http.HandlerFunc) {
+	h.mux.HandleFunc(pattern, fn)
 }
 
 // SetStatusHandler 设置 /api/status 的聚合函数
@@ -39,38 +70,15 @@ func (h *Handler) SetServiceController(svc ServiceController) { h.svc = svc }
 
 // Handler 实现 http.Handler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	// API 路由
-	if strings.HasPrefix(path, "/api/") {
-		h.handleAPI(w, r)
-		return
-	}
-
-	// 静态: /static/* 从嵌入 FS 提供
-	if strings.HasPrefix(path, "/static/") {
-		serveFS(w, r, h.webFS, strings.TrimPrefix(path, "/"))
-		return
-	}
-
-	// 根/SPA: 返回 index.html (deep link 回退)
-	serveIndex(w, h.webFS)
+	h.mux.ServeHTTP(w, r)
 }
 
-func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/api/status":
-		if h.upFn != nil {
-			jsonOK(w, h.upFn())
-		} else {
-			jsonOK(w, map[string]any{"ok": false, "message": "status 未初始化"})
-		}
-	case "/api/health":
-		jsonOK(w, map[string]any{"ok": true})
-	case "/api/start", "/api/stop", "/api/restart":
-		h.handleServiceControl(w, r)
-	default:
-		http.NotFound(w, r)
+// handleStatus /api/status
+func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if h.upFn != nil {
+		jsonOK(w, h.upFn())
+	} else {
+		jsonOK(w, map[string]any{"ok": false, "message": "status 未初始化"})
 	}
 }
 
@@ -78,6 +86,10 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleServiceControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonErr(w, 405, "仅支持 POST")
+		return
+	}
+	if h.authCheck != nil && !h.authCheck(r) {
+		jsonErr(w, 401, "未认证或会话已过期")
 		return
 	}
 	if h.svc == nil {
