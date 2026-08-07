@@ -21,8 +21,14 @@ var panelBaseDir = func() string {
 // backupDirVar 备份目录 (由 SetBackupDir 注入, 默认 Go 项目 runtime)
 var backupDirVar = ""
 
+// backupEnabledVar 备份开关 (设置页可关, 默认 true)
+var backupEnabledVar = true
+
 // SetBackupDir 设置备份目录 (应与旧面板共享)
 func SetBackupDir(dir string) { backupDirVar = dir }
+
+// SetBackupEnabled 设置备份开关 (false 时跳过所有自动备份)
+func SetBackupEnabled(enabled bool) { backupEnabledVar = enabled }
 
 // backupDir 备份目录
 func backupDir() string {
@@ -34,6 +40,9 @@ func backupDir() string {
 
 // backupRawFile 备份原始文件到 runtime/backups/时间戳/
 func backupRawFile(path string) string {
+	if !backupEnabledVar {
+		return "" // 备份开关已关闭
+	}
 	if _, err := os.Stat(path); err != nil {
 		return ""
 	}
@@ -144,12 +153,13 @@ func setupPreview(cfg *config.Config) map[string]any {
 			changes = append(changes, "将新增平台 "+cfg.Astrbot.PlatformID)
 		}
 	}
+	needRestart := len(changes) > 0
 	if len(changes) == 0 {
 		changes = append(changes, "无变更")
 	}
 	return map[string]any{
 		"ok": true, "changes": changes, "untouched": []string{"模型 provider (不改动)"},
-		"need_restart": true, "cmd_config": cfgPath, "backup_dir": backupDir(),
+		"need_restart": needRestart, "cmd_config": cfgPath, "backup_dir": backupDir(),
 	}
 }
 

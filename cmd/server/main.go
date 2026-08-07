@@ -81,12 +81,14 @@ func main() {
 				"astrbot_data_dir": cfg.AstrbotDataDir,
 				"cmd_config":      cfg.Astrbot.CmdConfig,
 				"cmd_config_mtime": nil,
+				"port":            cfg.Port,
 			},
 		}
 	}
 
 	srv := api.New(webSub)
 	srv.SetStatusHandler(statusFn)
+	srv.SetAstrbotWebUIPort(cfg.Services.Astrbot.WebUIPort)
 	// 服务控制器
 	svc := process.NewServices(&cfg)
 	srv.SetServiceController(svc)
@@ -104,6 +106,10 @@ func main() {
 	srv.RegisterInstall(&cfg)
 	// 面板认证
 	srv.RegisterAuth(&cfg)
+	// 面板设置 (认证/备份开关), 需在 RegisterAuth 之后
+	srv.RegisterSettings(&cfg)
+	api.SetSettingsConfigPath(filepath.Join(baseDir, "config.json"))
+	api.SetBackupEnabled(cfg.BackupEnabled)
 	// 重启 AstrBot 注入 (恢复/配置用)
 	api.SetRestartFn(func(c *config.Config) {
 		svc.Stop("astrbot")

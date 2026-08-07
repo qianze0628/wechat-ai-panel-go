@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -21,11 +22,13 @@ type ServiceController interface {
 
 // Handler 聚合路由 (ServeMux 模式)
 type Handler struct {
-	webFS     fs.FS // 嵌入的前端静态资源 (dist)
-	mux       *http.ServeMux
-	upFn      func() any // 应用状态聚合
-	svc       ServiceController
-	authCheck func(r *http.Request) bool
+	webFS       fs.FS // 嵌入的前端静态资源 (dist)
+	mux         *http.ServeMux
+	upFn        func() any // 应用状态聚合
+	svc         ServiceController
+	authCheck   func(r *http.Request) bool
+	setAuth     *AuthStore // 认证存储 (settings 热更新用)
+	astrbotPort int        // AstrBot WebUI 端口 (供 /astrbot 跳转)
 }
 
 // New 创建 HTTP handler
@@ -45,14 +48,52 @@ func New(webFS fs.FS) *Handler {
 		}
 		serveIndex(w, h.webFS)
 	})
+	// /astrbot 跳转 AstrBot WebUI (与 Python RedirectResponse 一致; 在 SPA 兜底前注册)
+	h.mux.HandleFunc("/astrbot", func(w http.ResponseWriter, r *http.Request) {
+		port := 6185 // 默认 webui 端口; 由 SetAstrbotWebUIPort 覆盖
+		if h.astrbotPort > 0 {
+			port = h.astrbotPort
+		}
+		http.Redirect(w, r, fmt.Sprintf("http://localhost:%d", port), http.StatusFound)
+	})
 	// 基础 API
 	h.mux.HandleFunc("/api/status", h.handleStatus)
+	// /api/services 服务运行状态 (与 Python service_status 一致; 复用 status 聚合的 services)
+	h.mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
+		if h.upFn == nil {
+			jsonOK(w, map[string]any{"ok": false, "message": "status 未初始化"})
+			return
+		}
+		st := h.upFn()
+		m, ok := st.(map[string]any)
+		if !ok {
+			jsonOK(w, map[string]any{"ok": false, "message": "服务状态不可用"})
+			return
+		}
+		if svc, ok2 := m["services"]; ok2 {
+			jsonOK(w, svc)
+			return
+		}
+		jsonOK(w, map[string]any{"ok": false, "message": "services 字段缺失"})
+	})
 	h.mux.HandleFunc("/api/start", h.handleServiceControl)
 	h.mux.HandleFunc("/api/stop", h.handleServiceControl)
 	h.mux.HandleFunc("/api/restart", h.handleServiceControl)
-	// 插件列表 (Go 版无动态插件, 返回空; 前端兼容)
+	// 插件列表 (Go 版内置插件元数据; 对应 Py 版 install/messages 插件,
+	// 让前端侧边栏显示"插件"分区; Go 后端已实现对应 API)
 	h.mux.HandleFunc("/api/plugins", func(w http.ResponseWriter, r *http.Request) {
-		jsonOK(w, map[string]any{"ok": true, "plugins": []any{}})
+		jsonOK(w, map[string]any{"ok": true, "plugins": []any{
+			map[string]any{
+				"id": "install", "name": "依赖安装", "description": "多平台依赖安装引擎",
+				"version": "1.0.0", "enabled": true,
+				"nav": map[string]any{"to": "/plugin/install", "label": "依赖安装（插件）", "icon": "Puzzle"},
+			},
+			map[string]any{
+				"id": "messages", "name": "消息记录", "description": "微信消息记录",
+				"version": "1.0.0", "enabled": true,
+				"nav": map[string]any{"to": "/plugin/messages", "label": "插件示例：消息记录", "icon": "Puzzle"},
+			},
+		}})
 	})
 	return h
 }
@@ -64,6 +105,9 @@ func (h *Handler) HandleFunc(pattern string, fn http.HandlerFunc) {
 
 // SetStatusHandler 设置 /api/status 的聚合函数
 func (h *Handler) SetStatusHandler(fn func() any) { h.upFn = fn }
+
+// SetAstrbotWebUIPort 设置 AstrBot WebUI 端口 (供 /astrbot 跳转)
+func (h *Handler) SetAstrbotWebUIPort(port int) { h.astrbotPort = port }
 
 // SetServiceController 注入服务控制
 func (h *Handler) SetServiceController(svc ServiceController) { h.svc = svc }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,8 +39,8 @@ func detectPlatform() string {
 	return "linux"
 }
 
-// planInstallTasks 规划安装任务
-func planInstallTasks(platform, wechatDir, astrbotRoot string) []map[string]string {
+// planInstallTasks 规划安装任务 (wechatRepo 非空时, 缺源码自动 git clone 优化版)
+func planInstallTasks(platform, wechatDir, astrbotRoot, wechatRepo string) []map[string]string {
 	var tasks []map[string]string
 	pkg := filepath.Join(wechatDir, "package.json")
 	nm := filepath.Join(wechatDir, "node_modules")
@@ -51,9 +52,16 @@ func planInstallTasks(platform, wechatDir, astrbotRoot string) []map[string]stri
 			})
 		}
 	} else {
-		tasks = append(tasks, map[string]string{
-			"label": "wechat-bot 源码缺失: " + wechatDir, "kind": "warn", "target": wechatDir,
-		})
+		if wechatRepo != "" {
+			tasks = append(tasks, map[string]string{
+				"label": "git clone " + wechatRepo + " → " + wechatDir,
+				"kind":  "clone", "target": wechatDir, "repo": wechatRepo,
+			})
+		} else {
+			tasks = append(tasks, map[string]string{
+				"label": "wechat-bot 源码缺失: " + wechatDir, "kind": "warn", "target": wechatDir,
+			})
+		}
 	}
 	if which2("astrbot") == "" {
 		tasks = append(tasks, map[string]string{
@@ -87,6 +95,10 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			cmd.Dir = t["target"]
 		case "uv":
 			cmd = exec.Command("uv", "tool", "install", "astrbot")
+		case "clone":
+			// wechat-bot 优化版源码: git clone --depth 1, 之后自动 npm install
+			_ = os.MkdirAll(t["target"], 0o755)
+			cmd = exec.Command("git", "clone", "--depth", "1", t["repo"], t["target"])
 		}
 		if cmd != nil {
 			cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
@@ -104,6 +116,34 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 				installState.mu.Lock()
 				installState.Logs = append(installState.Logs, msg)
 				installState.mu.Unlock()
+				// clone 成功后自动 npm install
+				if t["kind"] == "clone" && err == nil {
+					installState.mu.Lock()
+					installState.Logs = append(installState.Logs, "["+platform+"] [start] npm install (wechat-bot)")
+					installState.mu.Unlock()
+					nmCmd := exec.Command("npm", "install")
+					nmCmd.Dir = t["target"]
+					nmCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+					d2 := make(chan error, 1)
+					go func() { d2 <- nmCmd.Run() }()
+					var msg2 string
+					select {
+					case err2 := <-d2:
+						if err2 != nil {
+							ok = false
+							msg2 = "[done] npm install FAILED: " + err2.Error()
+						} else {
+							msg2 = "[done] npm install exit=0"
+						}
+					case <-time.After(600 * time.Second):
+						ok = false
+						nmCmd.Process.Kill()
+						msg2 = "[" + platform + "] [error] npm install 超时"
+					}
+					installState.mu.Lock()
+					installState.Logs = append(installState.Logs, msg2)
+					installState.mu.Unlock()
+				}
 			case <-time.After(900 * time.Second):
 				ok = false
 				cmd.Process.Kill()
@@ -134,6 +174,7 @@ func (h *Handler) RegisterInstall(cfg *config.Config) {
 		platform := detectPlatform()
 		wechatDir := cfg.WechatBotDir
 		astrbotRoot := cfg.AstrbotRoot
+		wechatRepo := cfg.WechatBotRepo
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		if p, ok := body["platform"].(string); ok && p != "" {
@@ -145,11 +186,14 @@ func (h *Handler) RegisterInstall(cfg *config.Config) {
 		if d, ok := body["astrbot_dir"].(string); ok && d != "" {
 			astrbotRoot = d
 		}
+		if d, ok := body["wechat_repo"].(string); ok && d != "" {
+			wechatRepo = strings.TrimSpace(d)
+		}
 		if platform != "windows" && platform != "mac" && platform != "linux" {
 			jsonErr(w, 400, "未知平台: "+platform)
 			return
 		}
-		tasks := planInstallTasks(platform, wechatDir, astrbotRoot)
+		tasks := planInstallTasks(platform, wechatDir, astrbotRoot, wechatRepo)
 		if len(tasks) == 0 {
 			jsonOK(w, map[string]any{
 				"ok": true, "message": "所有组件已就绪, 无需安装", "tasks": []any{},
@@ -179,8 +223,12 @@ func (h *Handler) RegisterInstall(cfg *config.Config) {
 	h.HandleFunc("/api/install/status", func(w http.ResponseWriter, r *http.Request) {
 		installState.mu.Lock()
 		defer installState.mu.Unlock()
+		logs := installState.Logs
+		if logs == nil {
+			logs = []string{}
+		}
 		jsonOK(w, map[string]any{
-			"running": installState.Running, "logs": installState.Logs,
+			"running": installState.Running, "logs": logs,
 			"done": installState.Done, "ok": installState.OK,
 			"platform": installState.Platform, "install_where": installState.Where,
 		})

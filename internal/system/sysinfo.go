@@ -11,6 +11,7 @@ import (
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // r1 保留 1 位小数 (与 Python psutil round 一致)
@@ -117,5 +118,15 @@ func physicalCores() int {
 }
 
 func processCount() int {
-	return 0 // 留空 (避免额外依赖; 需要时可用 host 或 /proc)
+	ps, err := process.Processes()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, p := range ps {
+		if n, err := p.NumThreads(); err == nil && n > 0 {
+			count++
+		}
+	}
+	return count
 }

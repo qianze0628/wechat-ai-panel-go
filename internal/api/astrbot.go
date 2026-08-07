@@ -133,22 +133,46 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 				}
 			}
 		}
-		for _, name := range historyRoomNames(cfg) {
+		// wechat4u 只能同步"有消息进来的群", 其余群在消息记录里但当前 session 没加载。
+		// 近期(默认 3 天)有消息的群 = 仍在群里的活跃群 (标 fromUnsynced, 不标历史)
+		// 更早的群 = 可能已退出 (标 fromHist 历史)
+		for _, item := range historyRoomInfos(cfg) {
+			name := item["name"].(string)
 			hid := util.HashName(name)
-			if !known[fmt.Sprintf("%d", hid)] {
-				rooms = append(rooms, map[string]any{
-					"name": name, "hashId": hid, "id": name, "fromHist": true,
-				})
-				known[fmt.Sprintf("%d", hid)] = true
+			if known[fmt.Sprintf("%d", hid)] {
+				continue
 			}
+			lastActive, _ := item["lastActive"].(int64)
+			isRecent := time.Now().Unix()-lastActive <= 3*86400
+			rooms = append(rooms, map[string]any{
+				"name": name, "hashId": hid, "id": name,
+				"fromHist":    !isRecent,
+				"fromUnsynced": isRecent,
+				"lastActive":  lastActive,
+			})
+			known[fmt.Sprintf("%d", hid)] = true
 		}
 		contacts := toAnySlice(data["contacts"])
-		// 给群补活跃发言者 (消息记录反推真实昵称)
+		// 给群补活跃发言者 (消息记录反推真实昵称) + 构造 memberList (真实名并集)
 		for _, r := range rooms {
-			if rm, ok := r.(map[string]any); ok {
-				if nm, ok := rm["name"].(string); ok {
-					rm["activeNames"] = roomActiveMembers(cfg, nm)
-				}
+			rm, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			nm, _ := rm["name"].(string)
+			if nm == "" {
+				continue
+			}
+			active := roomActiveMembers(cfg, nm)
+			rm["activeNames"] = active
+			ml, unk := mergeRoomMembers(rm, active, nm)
+			rm["memberList"] = ml
+			rm["unknownMemberCount"] = unk
+			// 人数兜底: wechat4u 未同步的群 (fromUnsynced) 没有 memberCount/members,
+			// 用 memberList(消息记录真实名) + 未知名成员数 估算总人数, 避免显示 0
+			total := len(ml) + unk
+			if cur, ok2 := rm["memberCount"].(float64); !ok2 || int(cur) <= 0 {
+				rm["memberCount"] = total
 			}
 		}
 		jsonOK(w, map[string]any{"ok": true, "contacts": contacts, "rooms": rooms})
@@ -158,8 +182,9 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 	h.HandleFunc("/api/whitelist", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			var payload struct {
-				ChatIDs  []string `json:"chatIds"`
-				AdminIDs []string `json:"adminIds"`
+				ChatIDs              []string            `json:"chatIds"`
+				AdminIDs             []string            `json:"adminIds"`
+				ExcludedGroupMembers map[string][]string `json:"excludedGroupMembers"`
 			}
 			json.NewDecoder(r.Body).Decode(&payload)
 			out, err := ac.api("whitelist", "POST", payload)
@@ -196,6 +221,30 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 			}
 		}
 		out["nameMap"] = nameMap
+		// superAdminIds/superAdminNames: 从 cmd_config.json 读 super_admins_id (与 Py 版一致)
+		if cfgPath := cfg.Astrbot.CmdConfig; cfgPath != "" {
+			if m, err2 := util.ReadJSONFile(cfgPath); err2 == nil {
+				var supers []string
+				switch v := m["super_admins_id"].(type) {
+				case []any:
+					for _, x := range v {
+						supers = append(supers, fmt.Sprintf("%v", x))
+					}
+				case []string:
+					supers = v
+				}
+				out["superAdminIds"] = supers
+				supNames := make([]string, 0, len(supers))
+				for _, sid := range supers {
+					if n, ok2 := nameMap[sid]; ok2 {
+						supNames = append(supNames, n)
+					} else {
+						supNames = append(supNames, sid)
+					}
+				}
+				out["superAdminNames"] = supNames
+			}
+		}
 		jsonOK(w, out)
 	})
 
@@ -324,9 +373,9 @@ func ExtractCreds(cfg *config.Config) map[string]any {
 	return out
 }
 
-// historyRoomNames 从 messages.jsonl 提取历史聊过的群名 (按条数降序)
-// 仅补最近 activeDays 天内有消息的群, 避免已退出的群长期显示
-func historyRoomNames(cfg *config.Config) []string {
+// historyRoomInfos 从 messages.jsonl 提取历史聊过的群 (按条数降序)
+// 返回 [{name, count, lastActive}], 仅最近 activeDays 天内有消息的群
+func historyRoomInfos(cfg *config.Config) []map[string]any {
 	const activeDays = 30
 	cutoff := time.Now().Add(-activeDays * 24 * time.Hour).Unix()
 	path := filepath.Join(cfg.WechatBotDir, ".data", "wechat", "messages.jsonl")
@@ -368,7 +417,23 @@ func historyRoomNames(cfg *config.Config) []string {
 		}
 	}
 	sort.Slice(names, func(i, j int) bool { return counts[names[i]] > counts[names[j]] })
-	return names
+	out := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{"name": n, "count": counts[n], "lastActive": lastTs[n]})
+	}
+	return out
+}
+
+// historyRoomNames 兼容: 只返回群名
+func historyRoomNames(cfg *config.Config) []string {
+	infos := historyRoomInfos(cfg)
+	out := make([]string, 0, len(infos))
+	for _, it := range infos {
+		if n, ok := it["name"].(string); ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // roomActiveMembers 返回某群历史活跃发言者名 (按条数降序)
@@ -410,6 +475,56 @@ func roomActiveMembers(cfg *config.Config, roomName string) []string {
 		names = names[:30]
 	}
 	return names
+}
+
+// mergeRoomMembers 合并群成员: bot 侧 members (有名字的) + 消息记录真实昵称 (activeNames),
+// 去重后返回 memberList (带 hashId, 可直接勾选进白名单) 和拿不到名字的 bot 侧成员数
+func mergeRoomMembers(rm map[string]any, activeNames []string, roomName string) ([]map[string]any, int) {
+	existing := map[string]map[string]any{}
+	var order []string
+	add := func(name, rawId, source string) {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "未知名成员" {
+			return
+		}
+		if _, ok := existing[name]; ok {
+			return
+		}
+		existing[name] = map[string]any{
+			"rawId":  rawId,
+			"name":   name,
+			"hashId": util.HashName(name),
+			"source": source,
+		}
+		order = append(order, name)
+	}
+	unknown := 0
+	if raw, ok := rm["members"].([]any); ok {
+		for _, x := range raw {
+			mm, ok := x.(map[string]any)
+			if !ok {
+				continue
+			}
+			mn, _ := mm["name"].(string)
+			rawID, _ := mm["rawId"].(string)
+			if strings.TrimSpace(mn) == "" || mn == "未知名成员" {
+				unknown++
+				continue
+			}
+			add(mn, rawID, "wechat")
+		}
+	}
+	for _, n := range activeNames {
+		if n == roomName {
+			continue
+		}
+		add(n, n, "messages")
+	}
+	out := make([]map[string]any, 0, len(order))
+	for _, n := range order {
+		out = append(out, existing[n])
+	}
+	return out, unknown
 }
 
 // listBackups 列备份

@@ -21,6 +21,8 @@ type Config struct {
 	QrServerScript string     `json:"qr_server_script"`
 	WechatBotServe string     `json:"wechat_bot_serve"`
 	BackupDir      string     `json:"backup_dir"`
+	BackupEnabled  bool       `json:"backup_enabled"`  // 是否创建配置备份 (默认 true)
+	WechatBotRepo  string     `json:"wechat_bot_repo"` // wechat-bot 优化版源码仓库 (非空时缺源码自动 clone)
 	Logs           LogPaths   `json:"logs"`
 	Services       Services   `json:"services"`
 	Astrbot        AstrConfig `json:"astrbot"`
@@ -88,6 +90,7 @@ func Default() Config {
 		AstrbotDataDir:  "C:/Users/YMB/data",
 		QrServerScript:  "C:/Users/YMB/Desktop/wechat/qr-server.js",
 		WechatBotServe:  "ChatGPT",
+		BackupEnabled:   true, // 默认备份开启
 		Logs: LogPaths{
 			AstrbotStdout: "logs/astrbot_boot.log",
 			AstrbotStderr: "logs/astrbot_boot_err.log",
