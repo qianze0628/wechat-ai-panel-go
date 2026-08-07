@@ -65,6 +65,9 @@ func main() {
 
 	srv := api.New(webSub)
 	srv.SetStatusHandler(statusFn)
+	// 服务控制器
+	svc := process.NewServices(&cfg)
+	srv.SetServiceController(svc)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
 	log.Printf("[panel] 微信 AI 管理面板 (Go): http://localhost:%d", cfg.Port)

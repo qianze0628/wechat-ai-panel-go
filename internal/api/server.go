@@ -7,13 +7,23 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// ServiceController 服务控制接口 (由 process 实现, 隔离依赖)
+type ServiceController interface {
+	Start(name string) (bool, string)
+	Stop(name string) (bool, string)
+	Restart(name string) (bool, string)
+	HealthCheck(name string) (bool, map[string]any)
+	WaitHealth(name string, timeout time.Duration) bool
+}
 
 // Handler 聚合路由
 type Handler struct {
-	webFS fs.FS   // 嵌入的前端静态资源 (dist)
-	upFn  func() any // 应用状态聚合 (由上层注入, 简单解耦)
-	auth  func(r *http.Request) bool
+	webFS   fs.FS   // 嵌入的前端静态资源 (dist)
+	upFn    func() any // 应用状态聚合 (由上层注入)
+	svc     ServiceController
 }
 
 // New 创建 HTTP handler
@@ -21,8 +31,11 @@ func New(webFS fs.FS) *Handler {
 	return &Handler{webFS: webFS}
 }
 
-// SetStatusHandler 设置 /api/status 的聚合函数 (来自上层)
+// SetStatusHandler 设置 /api/status 的聚合函数
 func (h *Handler) SetStatusHandler(fn func() any) { h.upFn = fn }
+
+// SetServiceController 注入服务控制
+func (h *Handler) SetServiceController(svc ServiceController) { h.svc = svc }
 
 // Handler 实现 http.Handler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +67,92 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/api/health":
 		jsonOK(w, map[string]any{"ok": true})
+	case "/api/start", "/api/stop", "/api/restart":
+		h.handleServiceControl(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// handleServiceControl /api/start|stop|restart?service=astrbot|wechat|qr|all
+func (h *Handler) handleServiceControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErr(w, 405, "仅支持 POST")
+		return
+	}
+	if h.svc == nil {
+		jsonErr(w, 500, "服务控制器未初始化")
+		return
+	}
+	svc := r.URL.Query().Get("service")
+	if svc == "" {
+		svc = "all"
+	}
+	action := ""
+	switch r.URL.Path {
+	case "/api/start":
+		action = "start"
+	case "/api/stop":
+		action = "stop"
+	case "/api/restart":
+		action = "restart"
+	}
+
+	names := []string{}
+	if svc == "all" {
+		names = []string{"astrbot", "wechat", "qr"}
+	} else {
+		names = []string{svc}
+	}
+
+	messages := []string{}
+	steps := []map[string]any{}
+	failed := false
+	for _, n := range names {
+		var ok bool
+		var msg string
+		switch action {
+		case "start":
+			ok, msg = h.startOne(n)
+		case "stop":
+			ok, msg = h.svc.Stop(n)
+		default:
+			ok, msg = h.svc.Restart(n)
+		}
+		if !ok {
+			failed = true
+		}
+		messages = append(messages, msg)
+		steps = append(steps, map[string]any{"service": n, "ok": ok, "message": msg})
+	}
+	jsonOK(w, map[string]any{"ok": !failed, "message": strings.Join(messages, " | "), "steps": steps})
+}
+
+// startOne 启动单个服务 (all 模式下带健康门控)
+func (h *Handler) startOne(name string) (bool, string) {
+	ok, msg := h.svc.Start(name)
+	if !ok {
+		return false, msg
+	}
+	// 健康等待 (astrbot 60s, wechat 30s, qr 20s)
+	timeout := 30
+	switch name {
+	case "astrbot":
+		timeout = 60
+	case "qr":
+		timeout = 20
+	}
+	if !h.svc.WaitHealth(name, time.Duration(timeout)*time.Second) {
+		return false, msg + " (健康检查超时)"
+	}
+	return true, msg + " (健康通过)"
+}
+
+// jsonErr 错误响应
+func jsonErr(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": msg})
 }
 
 // jsonOK 返回 JSON 200
