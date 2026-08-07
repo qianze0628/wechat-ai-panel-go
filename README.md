@@ -5,7 +5,7 @@
 **微信 AI 机器人管理面板 · Go 原生重构版**
 
 单文件可执行、低资源占用、开箱即用的微信 AI 机器人一站式管理面板。
-管理 [AstrBot](https://github.com/Soulter/AstrBot)（AI 对话引擎）与
+管理 [AstrBot](https://github.com/AstrBotDevs/AstrBot)（AI 对话引擎）与
 [wechat-bot](https://github.com/qianze0628/wechat-bot-optimized)（Wechaty 微信桥接器），
 提供 Web 可视化界面完成部署、配置、白名单、日志、备份等全部运维工作。
 
@@ -125,7 +125,7 @@ http://localhost:8081
 |---|---|
 | [wechat-ai-panel](https://github.com/qianze0628/wechat-ai-panel) | 本项目的 Python/FastAPI 原版（端口 8080） |
 | [wechat-bot-optimized](https://github.com/qianze0628/wechat-bot-optimized) | Wechaty + wechat4u 微信桥接器（端口 6189） |
-| [AstrBot](https://github.com/Soulter/AstrBot) | AI 对话引擎（WebUI 6185 / OneBot WS 20129） |
+| [AstrBot](https://github.com/AstrBotDevs/AstrBot) | AI 对话引擎（WebUI 6185 / OneBot WS 20129） |
 
 ## ⚠️ 注意事项
 
