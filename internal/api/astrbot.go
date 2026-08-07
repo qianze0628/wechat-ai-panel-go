@@ -317,7 +317,10 @@ func ExtractCreds(cfg *config.Config) map[string]any {
 }
 
 // historyRoomNames 从 messages.jsonl 提取历史聊过的群名 (按条数降序)
+// 仅补最近 activeDays 天内有消息的群, 避免已退出的群长期显示
 func historyRoomNames(cfg *config.Config) []string {
+	const activeDays = 30
+	cutoff := time.Now().Add(-activeDays * 24 * time.Hour).Unix()
 	path := filepath.Join(cfg.WechatBotDir, ".data", "wechat", "messages.jsonl")
 	f, err := os.Open(path)
 	if err != nil {
@@ -325,6 +328,7 @@ func historyRoomNames(cfg *config.Config) []string {
 	}
 	defer f.Close()
 	counts := map[string]int{}
+	lastTs := map[string]int64{}
 	sc := newLineScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -338,13 +342,22 @@ func historyRoomNames(cfg *config.Config) []string {
 		if isRoom, _ := m["isRoom"].(bool); isRoom {
 			if rm, ok := m["roomName"].(string); ok && rm != "" {
 				counts[rm]++
+				if ts, ok := m["timestamp"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, ts); err == nil {
+						if t.Unix() > lastTs[rm] {
+							lastTs[rm] = t.Unix()
+						}
+					}
+				}
 			}
 		}
 	}
-	// 按条数降序
 	names := make([]string, 0, len(counts))
 	for n := range counts {
-		names = append(names, n)
+		t := lastTs[n]
+		if t == 0 || t >= cutoff {
+			names = append(names, n)
+		}
 	}
 	sort.Slice(names, func(i, j int) bool { return counts[names[i]] > counts[names[j]] })
 	return names
