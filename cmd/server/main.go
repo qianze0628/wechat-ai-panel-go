@@ -31,12 +31,28 @@ func main() {
 		log.Fatalf("定位程序路径失败: %v", err)
 	}
 	baseDir := filepath.Dir(exePath)
-	// 开发模式: 用源码目录 (go run)
-	if _, err := os.Stat(filepath.Join(baseDir, "config.json")); err != nil {
-		if cwd, e := os.Getwd(); e == nil {
+	// 向上查找包含 config.json / config.local.json 的目录作为配置根:
+	// - exe 在 bin\ 时, 配置在项目根 → 应使用项目根
+	// - 开发模式 (go run) 时, 源码目录有 config → 直接命中
+	// - 都找不到则回退 cwd (双击 exe 时 cwd 是 exe 目录, 此时用默认配置)
+	if !configDirHasConfig(baseDir) {
+		if cwd, e := os.Getwd(); e == nil && configDirHasConfig(cwd) {
 			baseDir = cwd
+		} else {
+			// 逐级向上找 (最多 5 层, 避免无限)
+			for i := 0; i < 5; i++ {
+				parent := filepath.Dir(baseDir)
+				if parent == baseDir {
+					break
+				}
+				baseDir = parent
+				if configDirHasConfig(baseDir) {
+					break
+				}
+			}
 		}
 	}
+	log.Printf("[panel] 配置目录: %s", baseDir)
 
 	cfg := config.Default()
 	if err := cfg.Load(baseDir); err != nil {
@@ -126,6 +142,17 @@ func main() {
 	if err := http.ListenAndServe(addr, srv); err != nil {
 		log.Fatalf("监听失败: %v", err)
 	}
+}
+
+// configDirHasConfig 判断目录是否包含面板配置文件 (config.json 或 config.local.json)
+func configDirHasConfig(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.local.json")); err == nil {
+		return true
+	}
+	return false
 }
 
 // serviceStatus 服务运行状态
