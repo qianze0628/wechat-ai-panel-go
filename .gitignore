@@ -7,6 +7,9 @@ bin/
 dist/
 *.exe
 
+# 运行时日志
+logs/
+
 # Go 测试产物
 *.test
 coverage.out
