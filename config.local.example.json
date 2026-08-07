@@ -1,0 +1,26 @@
+{
+  "_comment": "复制为 config.local.json 后按需修改。所有路径相对程序所在目录, 也可填绝对路径。未列出的项使用内置默认值。",
+  "port": 8081,
+  "host": "0.0.0.0",
+  "panel_password": "",
+  "project_root": "runtime",
+  "wechat_bot_dir": "wechat-bot-windows",
+  "astrbot_root": ".astrbot-root",
+  "astrbot_data_dir": ".astrbot-data",
+  "wechat_bot_repo": "https://github.com/qianze0628/wechat-bot-optimized.git",
+  "qr_server_script": "qr-server.js",
+  "wechat_bot_serve": "ChatGPT",
+  "backup_enabled": true,
+  "astrbot": {
+    "cmd_config": "cmd_config.json",
+    "ws_port": 20129
+  },
+  "logs": {
+    "astrbot_stdout": "logs/astrbot_boot.log",
+    "astrbot_stderr": "logs/astrbot_boot_err.log",
+    "wechat_stdout": "logs/bot_boot.log",
+    "wechat_stderr": "logs/bot_boot_err.log",
+    "qr_stdout": "logs/qr_boot.log",
+    "qr_stderr": "logs/qr_boot_err.log"
+  }
+}

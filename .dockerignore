@@ -1,0 +1,12 @@
+# 构建上下文忽略项
+.git
+bin/
+release/
+logs/
+config.json
+config.local.json
+*.exe
+*.log
+node_modules/
+**/__pycache__/
+**/*.pyc

@@ -103,6 +103,30 @@ http://localhost:8081
 3. **连接配置**：扫码登录微信 → 一键配置 OneBot 桥接 → 打开 AstrBot WebUI
 4. **白名单与管理员**：勾选可聊天的联系人/群，保存后自动同步并重启桥接器
 
+## 🐳 Docker 部署
+
+镜像内置 Go 面板 + Node（wechat-bot）+ Python/uv（AstrBot），面板在容器内拉起并管理这些服务。
+
+```bash
+# 构建并启动
+docker compose up -d --build
+
+# 浏览器访问面板
+# http://localhost:8081
+```
+
+数据持久化在 `./data/`（wechat-bot 源码 / AstrBot 数据 / 配置 / 日志）。
+默认监听 `0.0.0.0:8081`（`config.local.example.json`），挂载自定义配置可覆盖：
+
+```yaml
+# docker-compose.yml 追加
+volumes:
+  - ./config.local.json:/app/config.local.json
+```
+
+> 也可直接用预编译二进制（见 [Releases](https://github.com/qianze0628/wechat-ai-panel-go/releases)），
+> Windows / Linux / macOS 均支持，无需 Docker。
+
 ## 📡 API 一览
 
 | 分组 | 端点 | 说明 |

@@ -13,6 +13,7 @@ import (
 // Config 面板配置结构 (对应 config.json 顶层)
 type Config struct {
 	Port           int        `json:"port"`
+	Host           string     `json:"host"` // 监听地址 (默认 127.0.0.1; Docker/远程部署设 0.0.0.0)
 	PanelPassword  string     `json:"panel_password"`
 	ProjectRoot    string     `json:"project_root"`
 	WechatBotDir   string     `json:"wechat_bot_dir"`
@@ -80,15 +81,17 @@ type Dashboard struct {
 	Port   int    `json:"port"`
 }
 
-// Default 默认配置 (与 Python DEFAULT_CONFIG 一致)
+// Default 默认配置 (与 Python DEFAULT_CONFIG 一致; 路径用相对值, 在 Load 里基于程序目录解析,
+// 以便跨平台 (Windows/Linux/macOS) 与 Docker 部署开箱即用)
 func Default() Config {
 	return Config{
 		Port:            8080,
-		ProjectRoot:     "C:/Users/YMB/Desktop/wechat",
-		WechatBotDir:    "C:/Users/YMB/Desktop/wechat/wechat-bot-windows",
-		AstrbotRoot:     "C:/Users/YMB",
-		AstrbotDataDir:  "C:/Users/YMB/data",
-		QrServerScript:  "C:/Users/YMB/Desktop/wechat/qr-server.js",
+		Host:            "127.0.0.1",
+		ProjectRoot:     "runtime",
+		WechatBotDir:    "wechat-bot-windows",
+		AstrbotRoot:     ".astrbot-root",
+		AstrbotDataDir:  ".astrbot-data",
+		QrServerScript:  "qr-server.js",
 		WechatBotServe:  "ChatGPT",
 		BackupEnabled:   true, // 默认备份开启
 		Logs: LogPaths{
@@ -105,7 +108,7 @@ func Default() Config {
 			Qr:      QrService{Port: 8090},
 		},
 		Astrbot: AstrConfig{
-			CmdConfig:   "C:/Users/YMB/data/cmd_config.json",
+			CmdConfig:   "cmd_config.json",
 			PlatformID:  "wechat-bridge",
 			PlatformTyp: "aiocqhttp",
 			WSHost:      "127.0.0.1",

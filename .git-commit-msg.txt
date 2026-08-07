@@ -1,0 +1,8 @@
+Feat: Docker 部署 + host 可配置 + 跨平台默认相对路径
+
+- Dockerfile / docker-compose.yml / .dockerignore
+- config.json 新增 host 字段 (默认 127.0.0.1, Docker/远程设 0.0.0.0)
+- Default() 默认路径改相对值, 基于程序目录解析 (Windows/Linux/macOS/Docker 开箱即用)
+- 新增 config.local.example.json 配置模板 (含 host 0.0.0.0 + 路径说明)
+- README 增加 Docker 部署章节与 Releases 说明
+- .gitignore 忽略 release/ 发布产物

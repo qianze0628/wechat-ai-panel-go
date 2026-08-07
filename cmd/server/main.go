@@ -117,8 +117,12 @@ func main() {
 		svc.Start("astrbot")
 	})
 
-	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
-	log.Printf("[panel] 微信 AI 管理面板 (Go): http://localhost:%d", cfg.Port)
+	host := cfg.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := fmt.Sprintf("%s:%d", host, cfg.Port)
+	log.Printf("[panel] 微信 AI 管理面板 (Go): http://%s:%d", host, cfg.Port)
 	if err := http.ListenAndServe(addr, srv); err != nil {
 		log.Fatalf("监听失败: %v", err)
 	}
