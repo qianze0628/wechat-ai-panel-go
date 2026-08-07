@@ -71,12 +71,10 @@ func main() {
 			"ok":      true,
 			"version": "go-v0.2",
 			"env":     envMap,
-			"services": serviceStatus(&cfg),
-			"creds": map[string]any{
-				"username": nil, "password": nil, "source": nil, "password_changed": false,
-			},
-			"astrbot_configured": false,
-			"config_errors":       ce,
+			"services":           serviceStatus(&cfg),
+			"creds":              api.ExtractCreds(&cfg),
+			"astrbot_configured": api.AstrbotConfigured(&cfg),
+			"config_errors":      ce,
 			"config": map[string]any{
 				"wechat_bot_dir":  cfg.WechatBotDir,
 				"astrbot_root":    cfg.AstrbotRoot,

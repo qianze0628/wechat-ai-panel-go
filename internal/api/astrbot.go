@@ -113,7 +113,7 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 
 	// 凭据
 	h.HandleFunc("/api/astrbot/creds", func(w http.ResponseWriter, r *http.Request) {
-		jsonOK(w, extractCreds(cfg))
+		jsonOK(w, ExtractCreds(cfg))
 	})
 
 	// whitelist contacts
@@ -272,8 +272,26 @@ func toAnySlice(v any) []any {
 	return arr
 }
 
-// extractCreds 提取 AstrBot 凭据 (与 Python 一致)
-func extractCreds(cfg *config.Config) map[string]any {
+// AstrbotConfigured 检查 aiocqhttp 平台是否已配置且指向 ws_port (与 Python _astrbot_platform_ok 一致)
+func AstrbotConfigured(cfg *config.Config) bool {
+	m, err := util.ReadJSONFile(cfg.Astrbot.CmdConfig)
+	if err != nil {
+		return false
+	}
+	platforms, _ := m["platform"].([]any)
+	for _, p := range platforms {
+		pm, _ := p.(map[string]any)
+		if pm != nil && pm["id"] == cfg.Astrbot.PlatformID {
+			en, _ := pm["enable"].(bool)
+			port, _ := pm["ws_reverse_port"].(float64)
+			return en && int(port) == cfg.Astrbot.WSPort
+		}
+	}
+	return false
+}
+
+// ExtractCreds 提取 AstrBot 凭据 (与 Python 一致)
+func ExtractCreds(cfg *config.Config) map[string]any {
 	out := map[string]any{"username": nil, "password": nil, "source": nil, "password_changed": false}
 	m, err := util.ReadJSONFile(cfg.Astrbot.CmdConfig)
 	if err != nil {

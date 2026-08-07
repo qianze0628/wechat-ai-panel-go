@@ -2,6 +2,7 @@
 package system
 
 import (
+	"math"
 	"os"
 	"runtime"
 	"time"
@@ -11,6 +12,11 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 )
+
+// r1 保留 1 位小数 (与 Python psutil round 一致)
+func r1(v float64) float64 {
+	return math.Round(v*10) / 10
+}
 
 // Info 系统状态 (对应 Python system_status())
 type Info struct {
@@ -68,22 +74,22 @@ func Gather() *Info {
 		if info.CPU == nil {
 			info.CPU = &CPUInfo{Cores: runtime.NumCPU()}
 		}
-		info.CPU.UsagePercent = pct[0]
+		info.CPU.UsagePercent = r1(pct[0])
 	}
 	// 内存
 	if m, err := mem.VirtualMemory(); err == nil {
 		info.Memory = &MemoryInfo{
-			Total: m.Total, Used: m.Used, Free: m.Available, UsagePercent: m.UsedPercent,
+			Total: m.Total, Used: m.Used, Free: m.Available, UsagePercent: r1(m.UsedPercent),
 		}
 	}
-	// 磁盘 (Windows C: / Linux /)
+	// 磁盘（Windows C: / Linux /）
 	diskPath := "C:\\"
 	if runtime.GOOS != "windows" {
 		diskPath = "/"
 	}
 	if d, err := disk.Usage(diskPath); err == nil {
 		info.Disk = &DiskInfo{
-			Total: d.Total, Used: d.Used, Free: d.Free, UsagePercent: d.UsedPercent,
+			Total: d.Total, Used: d.Used, Free: d.Free, UsagePercent: r1(d.UsedPercent),
 		}
 	}
 	// 系统
