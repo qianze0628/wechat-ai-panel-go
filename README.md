@@ -1,13 +1,16 @@
 <div align="center">
 
-# 🤖 WeChat AI Panel (Go)
+# 🤖 WeChat AI Panel
 
-**微信 AI 机器人管理面板 · Go 原生重构版**
+**微信 AI 机器人管理面板 · 官方主版本**
 
-单文件可执行、低资源占用、开箱即用的微信 AI 机器人一站式管理面板。
+单文件可执行、性能出色、低资源占用、开箱即用的微信 AI 机器人一站式管理面板。
 管理 [AstrBot](https://github.com/AstrBotDevs/AstrBot)（AI 对话引擎）与
 [wechat-bot](https://github.com/qianze0628/wechat-bot-optimized)（Wechaty 微信桥接器），
 提供 Web 可视化界面完成部署、配置、白名单、日志、备份等全部运维工作。
+
+> 🚀 **为什么选择本版本**：Go 编译为单一可执行文件，无需安装 Python 环境即可运行面板本身；
+> 启动快、内存占用低；Windows / Linux / macOS 均可直接使用预编译 Release，开箱即用。
 
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
@@ -147,7 +150,7 @@ volumes:
 
 | 项目 | 说明 |
 |---|---|
-| [wechat-ai-panel](https://github.com/qianze0628/wechat-ai-panel) | 本项目的 Python/FastAPI 原版（端口 8080） |
+| [wechat-ai-panel](https://github.com/qianze0628/wechat-ai-panel) | 本项目的前身（Python/FastAPI 版，端口 8080，功能相同的轻量备选） |
 | [wechat-bot-optimized](https://github.com/qianze0628/wechat-bot-optimized) | Wechaty + wechat4u 微信桥接器（端口 6189） |
 | [AstrBot](https://github.com/AstrBotDevs/AstrBot) | AI 对话引擎（WebUI 6185 / OneBot WS 20129） |
 
@@ -155,7 +158,7 @@ volumes:
 
 - **非官方 API**：本工具基于 wechat4u 逆向协议登录个人微信，仅限个人学习研究使用
 - **封号风险**：使用非官方微信协议存在账号风险，请自行评估并承担后果
-- **并发运行**：Python 版（8080）与 Go 版（8081）可并存，共享磁盘状态，但同一时刻只应运行一个面板实例管理同一套服务
+- **并发运行**：本版本（8081）与 Python 轻量版（8080）可并存，共享磁盘状态，但同一时刻只应运行一个面板实例管理同一套服务
 
 ## 📄 License
 
