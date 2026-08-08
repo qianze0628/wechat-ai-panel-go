@@ -242,11 +242,14 @@ func currentVersionShort() string {
 	return versionTag // 由 main.go 注入的版本号
 }
 
-// versionTag 当前面板版本 (main.go 注入)
-var versionTag = "v0.2.0"
+// versionTag 当前面板版本 (main.go 注入; /api/status 也用它, 单一来源)
+var versionTag = "v0.2.1"
 
 // SetVersionTag 注入当前版本
 func SetVersionTag(v string) { versionTag = v }
+
+// VersionTag 返回当前面板版本 (供 /api/status 使用)
+func VersionTag() string { return versionTag }
 
 // assetForUpdate 别名 (对齐 update.go 的 assetForPlatform)
 func assetForUpdate() string { return assetForPlatform() }
