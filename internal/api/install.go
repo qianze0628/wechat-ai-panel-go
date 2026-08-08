@@ -47,6 +47,12 @@ type InstallState struct {
 
 var installState = &InstallState{OK: nil, Stages: []StageState{}}
 
+// installLogPath 安装日志文件路径 (持久化, 日志页可回查)
+var installLogPath = ""
+
+// SetInstallLogPath 由 main.go 注入 (与面板其他日志同目录)
+func SetInstallLogPath(path string) { installLogPath = path }
+
 // stageIDs 阶段顺序与百分比权重 (参考 AstrBot UpdateProgress 的加权模型)
 var stagePlan = []struct {
 	id     string
@@ -206,6 +212,11 @@ func envInstallLabel(platform, name string) string {
 // runInstall 后台执行安装 (分阶段执行器: 环境 → clone → npm → astrbot → 验证)
 // 每阶段有结构化状态 (Stages), 总进度 Overall 按阶段权重推进 (参考 AstrBot UpdateProgress)
 func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot string) {
+	// 清空历史安装日志文件 (每次全新安装; 路径由 SetInstallLogPath 注入)
+	if installLogPath != "" {
+		_ = os.MkdirAll(filepath.Dir(installLogPath), 0o755)
+		_ = os.WriteFile(installLogPath, []byte(""), 0o644)
+	}
 	installState.mu.Lock()
 	ok := true
 	installState.Running = true
@@ -261,10 +272,19 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		installState.Overall = overall
 		installState.mu.Unlock()
 	}
+	// 安装日志也持久化到 logs/install.log (日志页可回查, 重启不丢)
+	// 路径由 SetInstallLogPath 注入 (main.go), 与主日志同目录
 	addLog := func(line string) {
 		installState.mu.Lock()
 		installState.Logs = append(installState.Logs, line)
 		installState.mu.Unlock()
+		// 追加到文件 (失败也保留, 供调试)
+		_ = os.MkdirAll(filepath.Dir(installLogPath), 0o755)
+		f, err := os.OpenFile(installLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(line + "\n")
+			_ = f.Close()
+		}
 	}
 
 	// 运行命令并捕获输出; 返回 (ok, errMsg)
@@ -543,6 +563,13 @@ func readLogIncremental(path string, offset int64) int64 {
 		installState.mu.Lock()
 		installState.Logs = append(installState.Logs, line)
 		installState.mu.Unlock()
+		// 同步写 install.log (供日志页回查)
+		if installLogPath != "" {
+			if f, err := os.OpenFile(installLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				_, _ = f.WriteString(line + "\n")
+				_ = f.Close()
+			}
+		}
 	}
 	return offset
 }

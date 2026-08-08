@@ -120,6 +120,7 @@ func main() {
 	srv.RegisterQr(&cfg)
 	// 安装引擎
 	srv.RegisterInstall(&cfg)
+	api.SetInstallLogPath(filepath.Join(baseDir, "logs", "install.log"))
 	// 面板认证
 	srv.RegisterAuth(&cfg)
 	// 面板设置 (认证/备份开关), 需在 RegisterAuth 之后

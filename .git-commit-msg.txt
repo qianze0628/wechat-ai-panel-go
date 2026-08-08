@@ -1,18 +1,14 @@
-Fix: 安装引擎实测修复 (runCmd 文件重定向 + .env 自动创建 + qr-server .cjs)
+Fix: 安装日志持久化 + 日志页"安装日志"标签
 
-实测"全新用户"端到端安装发现的 3 个问题与修复:
+问题: 全新用户 (无 uv/npm/astrbot) 一键安装失败时, 前端提示"去看日志",
+但日志页只有服务日志 (wechat/astrbot/qr), 安装日志只存内存 (弹窗关闭即丢),
+用户看到三个日志页全空, 无法得知失败原因。
 
-1. runCmd 卡死: npm install 的 prepare 钩子 (husky/npx) 派生孙进程继承
-   StdoutPipe, cmd.Run() 等孙进程退出导致卡死。改为 stdout/stderr 重定向到
-   临时文件 + cmd.Start()/Wait() + tailLogFile 增量读文件。
+修复:
+- 安装日志持久化到 logs/install.log (SetInstallLogPath 注入, 与主日志同目录)
+- runCmd 的 stdout/stderr 增量读取同时写入 install.log (npm/clone/git 输出全保留)
+- 日志页新增"安装日志"标签 (LogsPage SERVICES 加 install)
+- /api/logs?service=install 读取 install.log (logsPath 支持 install)
 
-2. wechat-bot 启动弹交互菜单: 全新 clone 无 .env, cli.js 因 SERVICE_TYPE
-   为空进入 inquirer 菜单卡死。startWechat 前 ensureWechatEnv: 无 .env 时
-   从 .env.example 复制并写入 SERVICE_TYPE。
-
-3. qr-server ESM 崩溃: 回退到 wechat-bot 目录的 qr-server.js 时, 因包
-   "type": "module" 被当 ESM 解析, require 未定义崩溃。面板回退逻辑支持
-   qr-server.cjs (wechat-bot 仓库已改 .cjs)。
-
-端到端验证通过: 删三组件 → 一键安装 (clone/npm/astrbot 全成功, 5 阶段
-100% 完成) → 服务全部恢复健康。
+实测: 模拟缺 wechat-bot 触发安装 → install.log 实时写入
+([env] → [clone] → Cloning into...) → 日志页可实时查看。

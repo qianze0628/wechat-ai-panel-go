@@ -122,7 +122,7 @@ func (h *Handler) RegisterMonitor(cfg *config.Config) {
 	})
 }
 
-// logsPath 日志文件路径 (含回退到 capture log)
+// logsPath 日志路径 (含回退到 capture log)
 func logsPath(cfg *config.Config, service string) string {
 	switch service {
 	case "astrbot":
@@ -135,6 +135,11 @@ func logsPath(cfg *config.Config, service string) string {
 		return cfg.Logs.QrStderr
 	case "wechat_err":
 		return cfg.Logs.WechatStderr
+	case "install":
+		if installLogPath != "" {
+			return installLogPath
+		}
+		return filepath.Join(panelBaseDir(), "logs", "install.log")
 	default: // wechat
 		return cfg.Logs.WechatStdout
 	}
