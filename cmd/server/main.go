@@ -120,6 +120,8 @@ func main() {
 	}
 	// AstrBot 集成 (creds/whitelist/setup/backups)
 	srv.RegisterAstrbot(&cfg)
+	// 插件中心 (扫描 AstrBot 插件 + 配置读写 + 连通状态)
+	srv.RegisterPluginCenter(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// 安装引擎
