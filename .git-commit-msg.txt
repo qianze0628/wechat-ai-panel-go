@@ -1,7 +1,19 @@
-Feat: 界面仿照 AstrBot 优化
+Feat: 安装引擎重写 (结构化进度) + AstrBot 白名单插件自动安装
 
-- 主题默认主色改为 AstrBot 品牌蓝 #3C96CA (深色 #5BA4D4), 新增"深海蓝"预设 #2F86BD
-- 卡片 hover 上浮动效 (translateY(-2px), 仿 AstrBot item-card)
-- 主操作按钮胶囊化 (48px 圆角, 仿 AstrBot "创建机器人" 主按钮)
-- 应用到概览/部署向导/连接配置页卡片与按钮
-- 一键安装: 平台选择弹窗 + 进度弹窗 (进度条 + 实时日志)
+安装引擎 (install.go):
+- 分阶段执行: 环境工具链 → clone wechat-bot → npm install → AstrBot → 验证
+- 结构化进度 (InstallProgress): stages/overall/stage/need_manual/manual_hint
+  参考 AstrBot UpdateProgress 的加权模型 (环境20% clone15% npm35% astrbot25% verify5%)
+- PATH 刷新: 装完工具把安装目录加入 PATH, 供后续命令使用 (修"装完 node 找不到 npm")
+- Windows uv 安装修复: 用 PowerShell 下载安装器, 不再走 bash/WSL
+- 失败显式化: 每阶段失败给出手动安装指引 (manual_hint 中文可读)
+- git 缺失检测纳入环境检查
+
+AstrBot 白名单插件绑定 (setup.go):
+- 内置 whitelist_manager 插件 (embed assets)
+- setupOneBot 时自动检测并安装到 {astrbot_data_dir}/plugins/whitelist_manager
+- 修复: 之前面板假设插件已存在, 新用户无插件时 /白名单 命令不可用
+
+前端:
+- 新增共享 InstallModal 组件 (平台选择 + 阶段状态 + 进度条 + 实时日志 + 手动提示)
+- 概览页"一键安装缺失组件"按钮接入 InstallModal (之前只 toast, 无进度弹窗)

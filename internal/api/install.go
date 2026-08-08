@@ -4,6 +4,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,15 @@ import (
 	"wechat-ai-panel/internal/config"
 )
 
+// StageState 单个安装阶段的状态 (结构化进度, 供前端阶段卡片展示)
+type StageState struct {
+	ID     string `json:"id"`     // "env" | "clone" | "npm" | "astrbot" | "verify"
+	Label  string `json:"label"`  // "环境工具链"
+	Status string `json:"status"` // "pending" | "running" | "done" | "error" | "manual"
+	Detail string `json:"detail"` // 人类可读说明 (如 "检测到 Node.js 未安装")
+	Error  string `json:"error"`  // 失败原因 (可读中文)
+}
+
 // InstallState 安装状态 (单例)
 type InstallState struct {
 	mu       sync.Mutex
@@ -25,9 +35,29 @@ type InstallState struct {
 	OK       *bool    `json:"ok"`
 	Platform string   `json:"platform"`
 	Where    map[string]any `json:"install_where"`
+	// 结构化进度 (v0.1.6+)
+	Stage      string `json:"stage"`       // 当前阶段 id
+	StageLabel string `json:"stage_label"` // 当前阶段名
+	Overall    int    `json:"overall"`     // 总进度 0-100
+	Stages     []StageState `json:"stages"` // 各阶段状态
+	NeedManual bool   `json:"need_manual"` // 是否等待用户手动操作
+	ManualHint string `json:"manual_hint"` // 手动操作指引 (中文)
 }
 
-var installState = &InstallState{OK: nil}
+var installState = &InstallState{OK: nil, Stages: []StageState{}}
+
+// stageIDs 阶段顺序与百分比权重 (参考 AstrBot UpdateProgress 的加权模型)
+var stagePlan = []struct {
+	id     string
+	label  string
+	weight int // 该阶段占总进度的百分比
+}{
+	{"env", "环境工具链", 20},
+	{"clone", "拉取 wechat-bot 源码", 15},
+	{"npm", "安装 wechat-bot 依赖 (npm install)", 35},
+	{"astrbot", "安装 AstrBot", 25},
+	{"verify", "验证", 5},
+}
 
 // detectPlatform 检测当前平台
 func detectPlatform() string {
@@ -119,7 +149,18 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 			return exec.Command("bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs")
 		}
 	case "uv":
-		// uv 官方安装脚本 (全平台)
+		// uv 官方安装
+		if platform == "windows" {
+			// Windows: 用 PowerShell 下载 uv.exe 到 %USERPROFILE%\.local\bin
+			// (避免依赖 bash/WSL; 装完后续命令需刷新 PATH)
+			return exec.Command("powershell", "-NoProfile", "-Command",
+				"$env:UV_DIR = Join-Path $env:USERPROFILE '.local\\bin'; "+
+					"New-Item -ItemType Directory -Force -Path $env:UV_DIR | Out-Null; "+
+					"$exe = Join-Path $env:UV_DIR 'uv.exe'; "+
+					"Invoke-WebRequest -Uri 'https://astral.sh/uv/0.5.x/installer.exe' -OutFile (Join-Path $env:TEMP 'uv-installer.exe') -UseBasicParsing; "+
+					"$i = Start-Process -FilePath (Join-Path $env:TEMP 'uv-installer.exe') -ArgumentList 'install --no-modify-path --target', $env:UV_DIR -Wait -PassThru; "+
+					"exit $i.ExitCode")
+		}
 		return exec.Command("bash", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh")
 	case "python":
 		switch platform {
@@ -161,7 +202,8 @@ func envInstallLabel(platform, name string) string {
 	return "安装 " + name
 }
 
-// runInstall 后台执行安装
+// runInstall 后台执行安装 (分阶段执行器: 环境 → clone → npm → astrbot → 验证)
+// 每阶段有结构化状态 (Stages), 总进度 Overall 按阶段权重推进 (参考 AstrBot UpdateProgress)
 func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot string) {
 	installState.mu.Lock()
 	ok := true
@@ -169,131 +211,281 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	installState.Done = false
 	installState.Platform = platform
 	installState.Logs = nil
+	installState.NeedManual = false
+	installState.ManualHint = ""
+	installState.Overall = 0
+	installState.Stage = ""
+	installState.StageLabel = ""
+	installState.Stages = make([]StageState, 0, len(stagePlan))
+	for _, sp := range stagePlan {
+		installState.Stages = append(installState.Stages, StageState{ID: sp.id, Label: sp.label, Status: "pending"})
+	}
 	installState.Where = map[string]any{
 		"platform": platform, "wechat_dir": wechatDir, "astrbot_dir": astrbotRoot,
 	}
 	installState.mu.Unlock()
 
-	for _, t := range tasks {
+	// PATH 累计: 每装完一个工具把安装目录加进 PATH, 供后续命令使用 (修复"装完 node 找不到 npm")
+	extraPaths := []string{}
+
+	// 阶段推进辅助
+	setStage := func(id, label string, weightBase int) {
 		installState.mu.Lock()
-		installState.Logs = append(installState.Logs, "["+platform+"] [start] "+t["label"])
-		installState.mu.Unlock()
-		var cmd *exec.Cmd
-		switch t["kind"] {
-		case "npm":
-			cmd = exec.Command("npm", "install")
-			cmd.Dir = t["target"]
-		case "uv":
-			cmd = exec.Command("uv", "tool", "install", "astrbot")
-		case "clone":
-			// wechat-bot 优化版源码: git clone --depth 1, 之后自动 npm install
-			_ = os.MkdirAll(t["target"], 0o755)
-			cmd = exec.Command("git", "clone", "--depth", "1", t["repo"], t["target"])
-		case "env_node":
-			// 安装 Node.js (平台感知)
-			cmd = envInstallCmd(platform, "node")
-		case "env_uv":
-			// 安装 uv (官方脚本)
-			cmd = envInstallCmd(platform, "uv")
-		case "env_python":
-			// 安装 Python
-			cmd = envInstallCmd(platform, "python")
+		installState.Stage = id
+		installState.StageLabel = label
+		for i := range installState.Stages {
+			if installState.Stages[i].ID == id {
+				installState.Stages[i].Status = "running"
+			}
 		}
-		if cmd != nil {
-			cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
-			// 实时捕获 stdout/stderr 到 installState.Logs (让前端能看到安装进度)
-			stdout, _ := cmd.StdoutPipe()
-			stderr, _ := cmd.StderrPipe()
-			if stdout != nil {
-				go func() {
-					sc := bufio.NewScanner(stdout)
-					sc.Buffer(make([]byte, 64*1024), 1024*1024)
-					for sc.Scan() {
-						line := strings.TrimRight(sc.Text(), "\r")
-						if line == "" {
-							continue
-						}
-						installState.mu.Lock()
-						installState.Logs = append(installState.Logs, line)
-						installState.mu.Unlock()
-					}
-				}()
-			}
-			if stderr != nil {
-				go func() {
-					sc := bufio.NewScanner(stderr)
-					sc.Buffer(make([]byte, 64*1024), 1024*1024)
-					for sc.Scan() {
-						line := strings.TrimRight(sc.Text(), "\r")
-						if line == "" {
-							continue
-						}
-						installState.mu.Lock()
-						installState.Logs = append(installState.Logs, line)
-						installState.mu.Unlock()
-					}
-				}()
-			}
-			done := make(chan error, 1)
-			go func() { done <- cmd.Run() }()
-			select {
-			case err := <-done:
-				msg := "[done] " + t["label"]
-				if err != nil {
-					ok = false
-					msg += " FAILED: " + err.Error()
+		installState.mu.Unlock()
+	}
+	stageDone := func(id string, detail string, errMsg string) {
+		installState.mu.Lock()
+		overall := 0
+		for i := range installState.Stages {
+			if installState.Stages[i].ID == id {
+				if errMsg != "" {
+					installState.Stages[i].Status = "error"
+					installState.Stages[i].Error = errMsg
 				} else {
-					msg += " exit=0"
+					installState.Stages[i].Status = "done"
 				}
-				installState.mu.Lock()
-				installState.Logs = append(installState.Logs, msg)
-				installState.mu.Unlock()
-				// clone 成功后自动 npm install
-				if t["kind"] == "clone" && err == nil {
-					installState.mu.Lock()
-					installState.Logs = append(installState.Logs, "["+platform+"] [start] npm install (wechat-bot)")
-					installState.mu.Unlock()
-					nmCmd := exec.Command("npm", "install")
-					nmCmd.Dir = t["target"]
-					nmCmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
-					d2 := make(chan error, 1)
-					go func() { d2 <- nmCmd.Run() }()
-					var msg2 string
-					select {
-					case err2 := <-d2:
-						if err2 != nil {
-							ok = false
-							msg2 = "[done] npm install FAILED: " + err2.Error()
-						} else {
-							msg2 = "[done] npm install exit=0"
-						}
-					case <-time.After(600 * time.Second):
-						ok = false
-						nmCmd.Process.Kill()
-						msg2 = "[" + platform + "] [error] npm install 超时"
-					}
-					installState.mu.Lock()
-					installState.Logs = append(installState.Logs, msg2)
-					installState.mu.Unlock()
-				}
-			case <-time.After(900 * time.Second):
-				ok = false
-				cmd.Process.Kill()
-				installState.mu.Lock()
-				installState.Logs = append(installState.Logs, "["+platform+"] [error] "+t["label"]+" 超时")
-				installState.mu.Unlock()
+				installState.Stages[i].Detail = detail
 			}
-		} else {
-			installState.mu.Lock()
-			installState.Logs = append(installState.Logs, "["+platform+"] [warn] "+t["label"])
-			installState.mu.Unlock()
+			if installState.Stages[i].Status == "done" {
+				overall += stagePlan[i].weight
+			}
+		}
+		installState.Overall = overall
+		installState.mu.Unlock()
+	}
+	addLog := func(line string) {
+		installState.mu.Lock()
+		installState.Logs = append(installState.Logs, line)
+		installState.mu.Unlock()
+	}
+
+	// 运行命令并捕获输出; 返回 (ok, errMsg)
+	runCmd := func(cmd *exec.Cmd, timeout time.Duration) (bool, string) {
+		if cmd == nil {
+			return false, "命令为空"
+		}
+		env := append(os.Environ(), extraPaths...)
+		env = append(env, "PYTHONIOENCODING=utf-8")
+		cmd.Env = env
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
+		streamCmdOutput(stdout, stderr)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Run() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				return false, err.Error()
+			}
+			return true, ""
+		case <-time.After(timeout):
+			cmd.Process.Kill()
+			return false, "执行超时"
 		}
 	}
+
+	// ===== 阶段 1: 环境工具链 =====
+	setStage("env", "环境工具链", 0)
+	addLog("[env] 检测环境工具链 (node/npm/uv/python/git)...")
+	envOK := true
+	for _, t := range tasks {
+		if t["kind"] == "env_node" || t["kind"] == "env_uv" || t["kind"] == "env_python" {
+			addLog("[env] [start] " + t["label"])
+			cmd := envInstallCmd(platform, strings.TrimPrefix(t["kind"], "env_"))
+			ok2, errMsg := runCmd(cmd, 300*time.Second)
+			if ok2 {
+				addLog("[env] [done] " + t["label"] + " exit=0")
+				// 安装目录加入 PATH (Windows: %USERPROFILE%\.local\bin; 标准 node 目录)
+				home, _ := os.UserHomeDir()
+				extraPaths = append(extraPaths,
+					"PATH="+os.Getenv("PATH")+string(os.PathListSeparator)+filepath.Join(home, ".local", "bin"),
+				)
+			} else {
+				envOK = false
+				addLog("[env] [error] " + t["label"] + " FAILED: " + errMsg)
+				installState.mu.Lock()
+				installState.NeedManual = true
+				installState.ManualHint = toolManualHint(platform, strings.TrimPrefix(t["kind"], "env_"))
+				installState.mu.Unlock()
+			}
+		}
+	}
+	// 重新检测 (PATH 刷新后)
+	if which2("node") == "" {
+		envOK = false
+	}
+	if !envOK {
+		stageDone("env", "环境工具链未就绪", "部分工具安装失败, 请按提示手动安装后重试")
+		finishInstall(false)
+		return
+	}
+	stageDone("env", "环境工具链就绪", "")
+	addLog("[env] [done] 环境工具链就绪")
+
+	// ===== 阶段 2: clone wechat-bot 源码 =====
+	setStage("clone", "拉取 wechat-bot 源码", 0)
+	cloneTask := findTask(tasks, "clone")
+	if cloneTask != nil {
+		addLog("[clone] [start] " + cloneTask["label"])
+		_ = os.MkdirAll(wechatDir, 0o755)
+		cmd := exec.Command("git", "clone", "--depth", "1", cloneTask["repo"], wechatDir)
+		ok2, errMsg := runCmd(cmd, 600*time.Second)
+		if !ok2 {
+			stageDone("clone", "git clone 失败", errMsg)
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "git clone 失败: " + errMsg + "\n可手动执行: git clone --depth 1 " + cloneTask["repo"] + " " + wechatDir
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		addLog("[clone] [done] 源码已拉取")
+	}
+	stageDone("clone", "源码就绪", "")
+
+	// ===== 阶段 3: npm install =====
+	setStage("npm", "安装 wechat-bot 依赖", 0)
+	pkgExists := fileExists(filepath.Join(wechatDir, "package.json"))
+	nmExists := fileExists(filepath.Join(wechatDir, "node_modules"))
+	if pkgExists && !nmExists {
+		addLog("[npm] [start] npm install (wechat-bot)")
+		cmd := exec.Command("npm", "install")
+		cmd.Dir = wechatDir
+		ok2, errMsg := runCmd(cmd, 600*time.Second)
+		if !ok2 {
+			stageDone("npm", "npm install 失败", errMsg)
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "npm install 失败: " + errMsg + "\n可手动执行: cd " + wechatDir + " && npm install"
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		addLog("[npm] [done] npm install 完成")
+	} else if !pkgExists {
+		addLog("[npm] [warn] wechat-bot 源码缺失 (package.json 不存在)")
+	}
+	stageDone("npm", "依赖就绪", "")
+
+	// ===== 阶段 4: 安装 AstrBot =====
+	setStage("astrbot", "安装 AstrBot", 0)
+	if which2("astrbot") == "" {
+		addLog("[astrbot] [start] uv tool install astrbot")
+		cmd := exec.Command("uv", "tool", "install", "astrbot")
+		ok2, errMsg := runCmd(cmd, 900*time.Second)
+		if !ok2 {
+			stageDone("astrbot", "AstrBot 安装失败", errMsg)
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "AstrBot 安装失败: " + errMsg + "\n可手动执行: uv tool install astrbot"
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		addLog("[astrbot] [done] AstrBot 已安装")
+	}
+	stageDone("astrbot", "AstrBot 就绪", "")
+
+	// ===== 阶段 5: 验证 =====
+	setStage("verify", "验证", 0)
+	nodeV, _ := exec.LookPath("node")
+	uvPath, _ := exec.LookPath("uv")
+	astrbotPath, _ := exec.LookPath("astrbot")
+	detail := "node=" + ternary(nodeV != "", "✓", "✗") +
+		" uv=" + ternary(uvPath != "", "✓", "✗") +
+		" astrbot=" + ternary(astrbotPath != "", "✓", "✗")
+	if nodeV != "" && uvPath != "" && astrbotPath != "" {
+		addLog("[verify] [done] " + detail)
+		stageDone("verify", detail, "")
+		ok = true
+	} else {
+		addLog("[verify] [error] " + detail)
+		stageDone("verify", detail, "部分组件验证未通过")
+		ok = false
+	}
+
+	finishInstall(ok)
+}
+
+// finishInstall 收尾: 置 Running/Done/OK
+func finishInstall(ok bool) {
 	installState.mu.Lock()
 	installState.Running = false
 	installState.Done = true
 	installState.OK = &ok
 	installState.mu.Unlock()
+}
+
+// findTask 在任务列表里找指定 kind 的任务
+func findTask(tasks []map[string]string, kind string) map[string]string {
+	for _, t := range tasks {
+		if t["kind"] == kind {
+			return t
+		}
+	}
+	return nil
+}
+
+// fileExists 判断文件/目录是否存在
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// ternary Go 没有三元; 小工具
+func ternary(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
+}
+
+// toolManualHint 手动安装指引 (中文可读)
+func toolManualHint(platform, name string) string {
+	switch name {
+	case "node":
+		if platform == "windows" {
+			return "Node.js 未安装或安装失败。请到 https://nodejs.org 下载 LTS 版安装 (安装时勾选 'Add to PATH'), 完成后点\"重新检测\""
+		}
+		return "Node.js 未安装。请执行: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs"
+	case "uv":
+		return "uv 安装失败。请手动执行: curl -LsSf https://astral.sh/uv/install.sh | sh, 或到 https://github.com/astral-sh/uv/releases 下载"
+	case "python":
+		if platform == "windows" {
+			return "Python 未安装。请到 https://www.python.org/downloads/ 下载 3.12+ (安装时勾选 'Add to PATH')"
+		}
+		return "Python 未安装。请执行: sudo apt-get install -y python3 python3-pip"
+	}
+	return "请手动安装缺失组件后重试"
+}
+
+// streamCmdOutput 实时把命令 stdout/stderr 流式写入 installState.Logs
+func streamCmdOutput(stdout, stderr io.Reader) {
+	stream := func(r io.Reader) {
+		if r == nil {
+			return
+		}
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := strings.TrimRight(sc.Text(), "\r")
+			if line == "" {
+				continue
+			}
+			installState.mu.Lock()
+			installState.Logs = append(installState.Logs, line)
+			installState.mu.Unlock()
+		}
+	}
+	go stream(stdout)
+	go stream(stderr)
 }
 
 // RegisterInstall 注册安装 API
@@ -362,10 +554,18 @@ func (h *Handler) RegisterInstall(cfg *config.Config) {
 		if logs == nil {
 			logs = []string{}
 		}
+		stages := installState.Stages
+		if stages == nil {
+			stages = []StageState{}
+		}
 		jsonOK(w, map[string]any{
 			"running": installState.Running, "logs": logs,
 			"done": installState.Done, "ok": installState.OK,
 			"platform": installState.Platform, "install_where": installState.Where,
+			// 结构化进度 (v0.1.6+)
+			"stage": installState.Stage, "stage_label": installState.StageLabel,
+			"overall": installState.Overall, "stages": stages,
+			"need_manual": installState.NeedManual, "manual_hint": installState.ManualHint,
 		})
 	})
 }

@@ -1,0 +1,6 @@
+name: whitelist_manager
+desc: 微信联系人白名单管理器 - 列出联系人/群，配置聊天白名单和管理员
+help: 使用 /白名单 查看，/白名单 添加 <名字> 添加，/白名单 移除 <名字> 移除；/管理员 设置 <名字> 设为管理员
+version: v1.0.0
+author: you
+repo: 

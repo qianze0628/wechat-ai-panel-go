@@ -2,6 +2,7 @@
 package api
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"wechat-ai-panel/internal/config"
 	"wechat-ai-panel/internal/util"
 )
+
+//go:embed assets/whitelist_manager/*
+var assetsFS embed.FS
 
 // panelBaseDir 程序基础目录 (通过 env 注入; 兜底 cwd)
 var panelBaseDir = func() string {
@@ -76,6 +80,12 @@ func setupOneBot(cfg *config.Config) (string, error) {
 	if _, err := os.Stat(cfgPath); err != nil {
 		return "", errors.New("cmd_config.json 不存在: " + cfgPath)
 	}
+	// 确保白名单插件已安装 (AstrBot 没有内置; /白名单 命令依赖它)
+	// 安装成功/已存在 → 返回提示文案; 安装失败 → 返回错误 (OneBot 配置仍继续, 但提示用户)
+	pluginMsg, pluginErr := ensureWhitelistPlugin(cfg)
+	if pluginErr != nil {
+		return "", fmt.Errorf("白名单插件安装失败: %v (可稍后手动放入 %s)", pluginErr, filepath.Join(cfg.AstrbotDataDir, "plugins"))
+	}
 	// 备份原始
 	backupRawFile(cfgPath)
 	m, err := util.ReadJSONFile(cfgPath)
@@ -123,7 +133,34 @@ func setupOneBot(cfg *config.Config) (string, error) {
 	if err := util.AtomicWriteJSON(cfgPath, m, true); err != nil {
 		return "", fmt.Errorf("写入失败: %w", err)
 	}
+	if pluginMsg != "" {
+		return "OneBot 配置已更新; " + pluginMsg, nil
+	}
 	return "OneBot 配置已更新", nil
+}
+
+// ensureWhitelistPlugin 确保 whitelist_manager 插件在 AstrBot 插件目录
+// 返回 (msg, err): msg=安装/已存在的提示, err=安装失败
+func ensureWhitelistPlugin(cfg *config.Config) (string, error) {
+	pluginDir := filepath.Join(cfg.AstrbotDataDir, "plugins", "whitelist_manager")
+	mainPy := filepath.Join(pluginDir, "main.py")
+	if _, err := os.Stat(mainPy); err == nil {
+		return "白名单插件已存在", nil
+	}
+	// 从内置资产复制
+	src, err := assetsFS.ReadFile("assets/whitelist_manager/main.py")
+	if err != nil {
+		return "", fmt.Errorf("内置插件资源缺失: %v", err)
+	}
+	srcMeta, _ := assetsFS.ReadFile("assets/whitelist_manager/metadata.yaml")
+	_ = os.MkdirAll(pluginDir, 0o755)
+	if werr := os.WriteFile(mainPy, src, 0o644); werr != nil {
+		return "", werr
+	}
+	if len(srcMeta) > 0 {
+		_ = os.WriteFile(filepath.Join(pluginDir, "metadata.yaml"), srcMeta, 0o644)
+	}
+	return "已安装白名单插件 (whitelist_manager), 重启 AstrBot 后 /白名单 命令可用", nil
 }
 
 // setupPreview 配置变更预览 (不写入)

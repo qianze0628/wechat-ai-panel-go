@@ -93,7 +93,9 @@ func Default() Config {
 		AstrbotDataDir:  ".astrbot-data",
 		QrServerScript:  "qr-server.js",
 		WechatBotServe:  "ChatGPT",
-		BackupEnabled:   true, // 默认备份开启
+		// wechat-bot 优化版源码仓库 (默认值; 全新用户没配 config 时也能自动 clone)
+		WechatBotRepo:  "https://github.com/qianze0628/wechat-bot-optimized.git",
+		BackupEnabled:  true, // 默认备份开启
 		Logs: LogPaths{
 			AstrbotStdout: "logs/astrbot_boot.log",
 			AstrbotStderr: "logs/astrbot_boot_err.log",

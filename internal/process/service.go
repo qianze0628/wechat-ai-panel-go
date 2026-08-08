@@ -191,10 +191,18 @@ func (s *Services) startQr() (bool, string) {
 	if node == "" {
 		return false, "node 未安装"
 	}
-	if _, err := os.Stat(s.Cfg.QrServerScript); err != nil {
+	// qr-server.js 定位: 优先配置路径, 回退 wechat-bot 目录 (全新用户 clone 后 qr-server.js 在 wechat-bot 里)
+	qrScript := s.Cfg.QrServerScript
+	if _, err := os.Stat(qrScript); err != nil {
+		fallback := filepath.Join(s.Cfg.WechatBotDir, "qr-server.js")
+		if _, err2 := os.Stat(fallback); err2 == nil {
+			qrScript = fallback
+		}
+	}
+	if _, err := os.Stat(qrScript); err != nil {
 		return false, fmt.Sprintf("qr-server.js 不存在: %s", s.Cfg.QrServerScript)
 	}
-	dir := filepath.Dir(s.Cfg.QrServerScript)
+	dir := filepath.Dir(qrScript)
 	// 传 WECHAT_LOG_FILE 给 qr-server (让它读正确的 wechat-bot 日志; 兼容旧版默认路径)
 	env := append(BaseEnv(), "WECHAT_LOG_FILE="+s.Cfg.Logs.WechatCaptureLog)
 	fout, err1 := openLog(s.Cfg.Logs.QrStdout)
@@ -207,7 +215,7 @@ func (s *Services) startQr() (bool, string) {
 		return false, fmt.Sprintf("qr-server 日志打开失败: %v", err2)
 	}
 	cmd, err := Spawn(SpawnOptions{
-		Args:   []string{node, s.Cfg.QrServerScript},
+		Args:   []string{node, qrScript},
 		Dir:    dir,
 		Env:    env,
 		Stdout: fout,
