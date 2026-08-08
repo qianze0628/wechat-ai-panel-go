@@ -25,6 +25,10 @@ var webFS embed.FS
 var webSub, _ = fs.Sub(webFS, "web")
 
 func main() {
+	// 自启启动方式: 记录日志 (便于排查"开机是否拉起")
+	if api.HandleAutostartArg() {
+		api.LogAutostart("autostart start at " + time.Now().Format("2006-01-02 15:04:05"))
+	}
 	// 程序运行目录 (exe 所在)
 	exePath, err := os.Executable()
 	if err != nil {
@@ -132,6 +136,13 @@ func main() {
 	// AstrBot 群聊 ICL 补丁自动恢复 (升级冲掉后自动重打, 防止群聊"答非所问")
 	api.EnsureGroupChatPatch()
 	srv.RegisterPatch()
+	// 开机自启 (Windows 注册表 Run 键), 自启日志在 logs/autostart.log
+	api.SetAutostartLogDir(filepath.Join(baseDir, "logs"))
+	srv.RegisterAutostart()
+	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
+	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
+	svc.EnsureAll()
+	go svc.Supervise(30 * time.Second)
 	// 重启 AstrBot 注入 (恢复/配置用)
 	api.SetRestartFn(func(c *config.Config) {
 		svc.Stop("astrbot")
@@ -193,6 +204,8 @@ func which(name string) string {
 }
 
 // findAstrbotExe 查找 astrbot 可执行 (uv tools → PATH)
+// 注意: 必须优先 uv tools 版。本机若存在 D:/python 全局旧副本 (4.27.1 等),
+// 版本落后且无群聊补丁, fallback 到它会"AI 变蠢"。因此 fallback 时打日志警告。
 func findAstrbotExe() string {
 	candidates := []string{
 		filepath.Join(os.Getenv("USERPROFILE"), `AppData\Roaming\uv\tools\astrbot\Scripts\astrbot.exe`),
@@ -202,5 +215,9 @@ func findAstrbotExe() string {
 			return c
 		}
 	}
-	return which("astrbot")
+	p := which("astrbot")
+	if p != "" {
+		log.Printf("[warn] 未找到 uv tools 版 astrbot, 使用 PATH 副本 %s (可能版本落后, 建议重装: uv tool install astrbot)", p)
+	}
+	return p
 }
