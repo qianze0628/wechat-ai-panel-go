@@ -83,6 +83,11 @@ wechat-ai-panel-go/
 - Go 1.26+（仅编译时需要；运行只需发布产物）
 - 可选：Node.js 18+ / Python 3.10+（AstrBot 与桥接器运行依赖，面板可引导安装）
 
+> **跨平台说明**：面板本体（Go）与依赖安装（npm/uv）在 Windows / Linux / macOS 上无差异。
+> 但 **wechat-bot 使用微信旧网页版协议（wechat4u），登录稳定性受微信风控影响，与操作系统无关**——
+> Windows 桌面环境更接近普通用户，Linux 服务器 / Docker 容器环境特征更"非典型"，更容易触发风控掉线。
+> 个人使用推荐 Windows；服务器场景如遇掉线可降低登录频率或考虑商业协议方案。
+
 ### 编译运行
 
 ```bash
