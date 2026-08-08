@@ -391,6 +391,7 @@ func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
 				jsonErr(w, 500, "写入失败: "+err.Error())
 				return
 			}
+			_ = os.Remove(cfgPath) // Windows rename 到已存在目标会失败, 先删
 			if err := os.Rename(tmpPath, cfgPath); err != nil {
 				_ = os.Remove(tmpPath)
 				jsonErr(w, 500, "替换失败: "+err.Error())

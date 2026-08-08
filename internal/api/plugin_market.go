@@ -58,23 +58,25 @@ var marketSourceNote = "cache"
 
 // fetchRemoteMarket 拉取远程索引 (失败回退内置), 缓存 10 分钟; 加锁防并发竞态
 func fetchRemoteMarket() []MarketPlugin {
+	// 1. 快速路径: 命中缓存直接返回 (锁只在读写缓存时短暂持有)
 	marketIndexMu.Lock()
-	defer marketIndexMu.Unlock()
 	if len(marketIndexCache) > 0 && time.Since(marketIndexCacheTime) < 10*time.Minute {
+		marketIndexMu.Unlock()
 		return marketIndexCache
 	}
-	marketSourceNote = "all-failed"
+	// 2. 缓存失效/空 → 锁外抓取 (不阻塞其他请求), 双检避免重复抓取
+	marketIndexMu.Unlock()
 	type rawIndex struct {
 		Plugins []MarketPlugin `json:"plugins"`
 	}
+	var fetched []MarketPlugin
+	source := "all-failed"
 	// 直连 raw → api.github.com (base64) → 镜像, 任一成功; 加长超时
 	for _, u := range []string{marketIndexURL, marketIndexURLAPI, marketIndexMirror} {
 		data, err := httpGetTimeout(u, 12000)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[market] fetch %s failed: %v\n", u, err)
 			continue
 		}
-		// api.github.com 返回 {content: base64}
 		var idx rawIndex
 		if strings.Contains(u, "api.github.com") {
 			var apiResp struct {
@@ -83,26 +85,42 @@ func fetchRemoteMarket() []MarketPlugin {
 			if err := json.Unmarshal(data, &apiResp); err != nil || apiResp.Content == "" {
 				continue
 			}
-			decoded, err := base64.StdEncoding.DecodeString(apiResp.Content)
+			// GitHub Contents API 的 content 每 60 字符带 \n, 必须先去换行再解码
+			decoded, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
+				if r == '\n' || r == '\r' {
+					return -1
+				}
+				return r
+			}, apiResp.Content))
 			if err != nil {
 				continue
 			}
 			if err := json.Unmarshal(decoded, &idx); err == nil && len(idx.Plugins) > 0 {
-				marketIndexCache = idx.Plugins
-				marketIndexCacheTime = time.Now()
-				marketSourceNote = "api.github.com"
-				return idx.Plugins
+				fetched = idx.Plugins
+				source = "api.github.com"
+				break
 			}
 			continue
 		}
 		if err := json.Unmarshal(data, &idx); err == nil && len(idx.Plugins) > 0 {
-			marketIndexCache = idx.Plugins
-			marketIndexCacheTime = time.Now()
-			marketSourceNote = u[:40]
-			return idx.Plugins
+			fetched = idx.Plugins
+			source = u[:40]
+			break
 		}
 	}
-	return nil // 回退内置
+	// 3. 双检: 锁内写缓存 (若别人已写好则用之)
+	marketIndexMu.Lock()
+	defer marketIndexMu.Unlock()
+	if len(marketIndexCache) > 0 && time.Since(marketIndexCacheTime) < 10*time.Minute {
+		return marketIndexCache
+	}
+	if len(fetched) == 0 {
+		return nil // 回退内置 (不写缓存, 下次再试)
+	}
+	marketIndexCache = fetched
+	marketIndexCacheTime = time.Now()
+	marketSourceNote = source
+	return fetched
 }
 
 // httpGetTimeout 简单 HTTP GET (标准库 net/http, 支持 TLS/重定向, 超时)
@@ -345,7 +363,11 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 			args = []string{"pip", "install", "-r", req}
 		}
 		cmd := exec.Command(pip, args...)
-		cmd.Env = append(os.Environ(), "UV_INDEX_URL="+cfg.Mirrors.PypiIndex)
+		// uv 吃 UV_INDEX_URL, pip 吃 PIP_INDEX_URL — 两种都注入保证镜像生效
+		cmd.Env = append(os.Environ(),
+			"UV_INDEX_URL="+cfg.Mirrors.PypiIndex,
+			"PIP_INDEX_URL="+cfg.Mirrors.PypiIndex,
+		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("依赖安装失败: %s %v", out, err)
 		}
