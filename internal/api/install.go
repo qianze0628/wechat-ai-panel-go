@@ -170,19 +170,49 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 			return exec.Command("bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs")
 		}
 	case "uv":
-		// uv 官方安装
+		// uv 安装: 多候选源 (GitHub Release 直连/ghproxy/astral 官网), 任一成功即可。
+		// 装完后 runCmd 里会刷新 PATH 并真实检测 uv 可用, 而不是只看命令退出码。
 		if platform == "windows" {
-			// Windows: 用 PowerShell 下载 uv.exe 到 %USERPROFILE%\.local\bin
-			// (避免依赖 bash/WSL; 装完后续命令需刷新 PATH)
-			return exec.Command("powershell", "-NoProfile", "-Command",
-				"$env:UV_DIR = Join-Path $env:USERPROFILE '.local\\bin'; "+
-					"New-Item -ItemType Directory -Force -Path $env:UV_DIR | Out-Null; "+
-					"$exe = Join-Path $env:UV_DIR 'uv.exe'; "+
-					"Invoke-WebRequest -Uri 'https://astral.sh/uv/0.5.x/installer.exe' -OutFile (Join-Path $env:TEMP 'uv-installer.exe') -UseBasicParsing; "+
-					"$i = Start-Process -FilePath (Join-Path $env:TEMP 'uv-installer.exe') -ArgumentList 'install --no-modify-path --target', $env:UV_DIR -Wait -PassThru; "+
-					"exit $i.ExitCode")
+			// Windows: 下载官方 uv.exe (zip) 解压到 %USERPROFILE%\.local\bin
+			// 按架构选 url (amd64 常见; arm64 备用)
+			arch := "x86_64-pc-windows-msvc"
+			if runtime.GOARCH == "arm64" {
+				arch = "aarch64-pc-windows-msvc"
+			}
+			uvVer := "0.6.14" // 稳定版本 (更新时同步改)
+			urlMirror := "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
+			urlDirect := "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
+			// 镜像配置里的 git clone proxy 也可用作文件下载加速前缀
+			urlGhfast := ""
+			if mirrorGitCloneProxy != "" {
+				urlGhfast = mirrorGitCloneProxy + "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
+			}
+			// 用 PowerShell 依次尝试 (镜像→ghfast→直连), 解压 zip 到 %USERPROFILE%\.local\bin
+			ps := "$target = Join-Path $env:USERPROFILE '.local\\bin'; " +
+				"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
+				"$zip = Join-Path $env:TEMP 'uv-installer.zip'; " +
+				"$urls = @('" + urlMirror + "'); " +
+				"if ('" + urlGhfast + "' -ne '') { $urls = @('" + urlGhfast + "') + $urls }; " +
+				"$urls = $urls + @('" + urlDirect + "'); " +
+				"$ok = $false; " +
+				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 60; if ((Get-Item $zip).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[下载失败] ' + $u + ' : ' + $_.Exception.Message); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
+				"if (-not $ok) { Write-Error '所有源下载失败, 请手动安装 uv (https://github.com/astral-sh/uv/releases)'; exit 1 }; " +
+				"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+				"$tmp = Join-Path $env:TEMP ('uv' + [guid]::NewGuid().ToString('N')); " +
+				"[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp); " +
+				"Copy-Item -Path (Join-Path $tmp 'uv.exe') -Destination $target -Force; " +
+				"Copy-Item -Path (Join-Path $tmp 'uvx.exe') -Destination $target -Force -ErrorAction SilentlyContinue; " +
+				"Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; " +
+				"if (-not (Test-Path (Join-Path $target 'uv.exe'))) { Write-Error 'uv.exe 解压失败'; exit 1 }; " +
+				"Write-Output 'uv 安装完成'; exit 0"
+			return exec.Command("powershell", "-NoProfile", "-Command", ps)
 		}
-		return exec.Command("bash", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh")
+		// Linux/macOS: 官方脚本 (带 ghproxy 镜像加速), 失败提示手动
+		if mirrorGitCloneProxy != "" {
+			return exec.Command("bash", "-c",
+				"curl -LsSf "+mirrorGitCloneProxy+"https://github.com/astral-sh/uv/install.sh | sh || curl -LsSf https://astral.sh/uv/install.sh | sh")
+		}
+		return exec.Command("bash", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh || curl -LsSf "+"https://raw.githubusercontent.com/astral-sh/uv/main/install.sh | sh")
 	case "python":
 		switch platform {
 		case "windows":
@@ -378,9 +408,30 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			}
 		}
 	}
-	// 重新检测 (PATH 刷新后)
-	if which2("node") == "" {
-		envOK = false
+	// 重新检测 (PATH 刷新后; 每个缺失项必须真实可用, 不能只看命令退出码)
+	checkEnv := func(name string) bool {
+		switch name {
+		case "node":
+			return which2("node") != "" && which2("npm") != ""
+		case "uv":
+			return which2("uv") != ""
+		case "python":
+			return which2("python") != "" || which2("python3") != ""
+		}
+		return true
+	}
+	for _, t := range tasks {
+		if t["kind"] == "env_node" || t["kind"] == "env_uv" || t["kind"] == "env_python" {
+			nm := strings.TrimPrefix(t["kind"], "env_")
+			if !checkEnv(nm) {
+				envOK = false
+				addLog("[env] [error] " + nm + " 安装后检测仍不可用, 请手动安装")
+				installState.mu.Lock()
+				installState.NeedManual = true
+				installState.ManualHint = toolManualHint(platform, nm)
+				installState.mu.Unlock()
+			}
+		}
 	}
 	if !envOK {
 		stageDone("env", "环境工具链未就绪", "部分工具安装失败, 请按提示手动安装后重试")
@@ -548,7 +599,10 @@ func toolManualHint(platform, name string) string {
 		}
 		return "Node.js 未安装。请执行: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs"
 	case "uv":
-		return "uv 安装失败。请手动执行: curl -LsSf https://astral.sh/uv/install.sh | sh, 或到 https://github.com/astral-sh/uv/releases 下载"
+		if platform == "windows" {
+			return "uv 安装失败 (下载源可能被墙/断网)。请手动: ① 浏览器打开 https://github.com/astral-sh/uv/releases 下载 uv-x86_64-pc-windows-msvc.zip; ② 解压得到 uv.exe; ③ 放到 C:\\Users\\你的用户名\\.local\\bin\\ 下; ④ 点\"重新检测\""
+		}
+		return "uv 安装失败。请手动执行: curl -LsSf https://astral.sh/uv/install.sh | sh, 或到 https://github.com/astral-sh/uv/releases 下载, 完成后点\"重新检测\""
 	case "python":
 		if platform == "windows" {
 			return "Python 未安装。请到 https://www.python.org/downloads/ 下载 3.12+ (安装时勾选 'Add to PATH')"
