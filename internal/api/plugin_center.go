@@ -318,17 +318,33 @@ func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
 				jsonErr(w, 500, "读取失败: "+err.Error())
 				return
 			}
-			// 兼容 BOM
-			raw := strings.TrimPrefix(string(data), "")
-			jsonOK(w, map[string]any{"ok": true, "config": json.RawMessage(raw), "path": cfgPath})
+			// 兼容 BOM (UTF-8 BOM = EF BB BF)
+			raw := strings.TrimPrefix(string(data), "\ufeff")
+			// mtime 乐观锁: 前端保存时回传, 校验文件是否被其他端改过
+			var mtime string
+			if fi, err := os.Stat(cfgPath); err == nil {
+				mtime = fi.ModTime().Format("20060102-150405.000")
+			}
+			jsonOK(w, map[string]any{"ok": true, "config": json.RawMessage(raw), "path": cfgPath, "mtime": mtime})
 		case http.MethodPost:
 			var body struct {
 				// 前端可能传 对象 或 JSON字符串, 统一用 json.RawMessage 接住再双重解析
 				Config json.RawMessage `json:"config"`
+				Mtime  string          `json:"mtime"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Config) == 0 {
 				jsonErr(w, 400, "请求体需含 config")
 				return
+			}
+			// 乐观锁: 若带 mtime, 且当前文件 mtime 不同 → 409 (并发修改)
+			if body.Mtime != "" {
+				if fi, err := os.Stat(cfgPath); err == nil {
+					cur := fi.ModTime().Format("20060102-150405.000")
+					if cur != body.Mtime {
+						jsonErr(w, 409, "配置已被其他端修改, 请刷新后重试 (避免覆盖)")
+						return
+					}
+				}
 			}
 			// 关键: 兼容前端传 JSON字符串 的场景 (先当字符串解, 再当对象解)
 			cfgRaw := body.Config
