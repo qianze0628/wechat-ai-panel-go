@@ -130,6 +130,8 @@ func main() {
 	srv.RegisterProvider(&cfg)
 	// 知识库管理 (kb 配置字段 + 文件清单)
 	srv.RegisterKB(&cfg)
+	// 面板 API 密钥 (OpenAPI 形态)
+	srv.RegisterAPIKey(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// 安装引擎
