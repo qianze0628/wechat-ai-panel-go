@@ -106,10 +106,39 @@ http://localhost:8081
 
 ### 使用引导
 
-1. 打开面板 → **部署向导**：检测环境 → 一键安装缺失组件
+1. 打开面板 → **一键部署向导**：检测环境 → 一键安装缺失组件
 2. **服务中心**：启动 AstrBot / wechat-bot / qr-server（可分别重启）
 3. **连接配置**：扫码登录微信 → 一键配置 OneBot 桥接 → 打开 AstrBot WebUI
 4. **白名单与管理员**：勾选可聊天的联系人/群，保存后自动同步并重启桥接器
+
+### 🇨🇳 国内镜像加速 (免代理)
+
+面板内置国内镜像源，安装依赖自动加速，**无需配置即可生效**：
+
+| 阶段 | 默认镜像 | 说明 |
+|---|---|---|
+| npm install | `registry.npmmirror.com` | 淘宝 npm 镜像 |
+| uv / pip | `mirrors.aliyun.com/pypi/simple/` | 阿里云 PyPI |
+| git clone | 直连 GitHub | 可配加速前缀，默认关 |
+
+可在 `config.local.json` 的 `mirrors` 段覆盖（留空 = 直连官方源）：
+
+```json
+"mirrors": {
+  "npm_registry": "https://registry.npmmirror.com",
+  "pypi_index": "https://mirrors.aliyun.com/pypi/simple/",
+  "git_clone_proxy": ""
+}
+```
+
+> `git_clone_proxy` 是 GitHub 加速前缀（ghproxy 类公共服务不稳定，失效时请更换其他
+> 可用源，或留空直连）。`npm_registry` / `pypi_index` 走阿里云公共免费服务。
+
+### 🩹 AstrBot 升级自动恢复
+
+面板内置群聊上下文过滤补丁（防止群聊"答非所问"）。若 AstrBot 升级冲掉了补丁，
+面板启动时自动检测并重新打上（`/api/patch/status` 可查状态，`/api/patch/reapply`
+可手动重打），无需手动干预。
 
 ## 🐳 Docker 部署
 
