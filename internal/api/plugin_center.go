@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -183,11 +184,19 @@ func scanPlugins(cfg *config.Config) []PluginInfo {
 func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 	// 插件列表
 	h.mux.HandleFunc("/api/plugin-center", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		jsonOK(w, map[string]any{"ok": true, "plugins": scanPlugins(cfg)})
 	})
 
 	// 插件配置 (GET 读值+schema; POST 保存)
 	h.mux.HandleFunc("/api/plugin-center/config", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		id := r.URL.Query().Get("id")
 		if id == "" {
 			jsonErr(w, 400, "缺少插件 id")
@@ -242,6 +251,10 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 
 	// 启用/禁用 (写 .disabled 标记)
 	h.mux.HandleFunc("/api/plugin-center/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		if r.Method != http.MethodPost {
 			jsonErr(w, 405, "仅支持 POST")
 			return
@@ -258,13 +271,18 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 			return
 		}
 		disabledFile := filepath.Join(pdir, ".disabled")
-		if enabledStr == "true" {
+		enabled, perr := strconv.ParseBool(enabledStr)
+		if perr != nil {
+			jsonErr(w, 400, "enabled 需为 true/false")
+			return
+		}
+		if enabled {
 			_ = os.Remove(disabledFile)
 		} else {
 			_ = os.WriteFile(disabledFile, []byte("disabled by panel\n"), 0o644)
 		}
 		jsonOK(w, map[string]any{
-			"ok": true, "message": fmt.Sprintf("插件已%s (重启 AstrBot 生效)", map[bool]string{true: "启用", false: "禁用"}[enabledStr == "true"]),
+			"ok": true, "message": fmt.Sprintf("插件已%s (重启 AstrBot 生效)", map[bool]string{true: "启用", false: "禁用"}[enabled]),
 		})
 	})
 }
@@ -274,6 +292,10 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 //   - POST /api/cmd-config   保存 (原子写 + 自动备份)
 func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
 	h.mux.HandleFunc("/api/cmd-config", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		cfgPath := cfg.Astrbot.CmdConfig
 		if _, err := os.Stat(cfgPath); err != nil {
 			jsonErr(w, 404, "cmd_config.json 不存在: "+cfgPath)
@@ -291,36 +313,60 @@ func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
 			jsonOK(w, map[string]any{"ok": true, "config": json.RawMessage(raw), "path": cfgPath})
 		case http.MethodPost:
 			var body struct {
+				// 前端可能传 对象 或 JSON字符串, 统一用 json.RawMessage 接住再双重解析
 				Config json.RawMessage `json:"config"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Config) == 0 {
 				jsonErr(w, 400, "请求体需含 config")
 				return
 			}
-			// 备份当前配置
-			backupDir := filepath.Join(cfg.AstrbotDataDir, "backups")
-			_ = os.MkdirAll(backupDir, 0o755)
-			ts := time.Now().Format("20060102-150405")
-			if raw, err := os.ReadFile(cfgPath); err == nil {
-				_ = os.WriteFile(filepath.Join(backupDir, "cmd_config."+ts+".json"), raw, 0o644)
+			// 关键: 兼容前端传 JSON字符串 的场景 (先当字符串解, 再当对象解)
+			cfgRaw := body.Config
+			// 若整体是带引号的字符串字面量, 先解出内层 JSON
+			if len(cfgRaw) > 0 && cfgRaw[0] == '"' {
+				var s string
+				if err := json.Unmarshal(cfgRaw, &s); err == nil {
+					cfgRaw = json.RawMessage(s)
+				}
 			}
-			// 校验 JSON
-			if !json.Valid(body.Config) {
-				jsonErr(w, 400, "配置不是合法 JSON")
+			// 必须是 JSON 对象 (命令空间: map)
+			var m map[string]any
+			if err := json.Unmarshal(cfgRaw, &m); err != nil {
+				jsonErr(w, 400, "config 必须是 JSON 对象: "+err.Error())
 				return
 			}
-			// 美化写回 (原子: 临时 + rename)
+			// 备份当前配置
+			backupDir := filepath.Join(cfg.AstrbotDataDir, "backups")
+			if err := os.MkdirAll(backupDir, 0o755); err != nil {
+				jsonErr(w, 500, "备份目录创建失败: "+err.Error())
+				return
+			}
+			ts := time.Now().Format("20060102-150405.000")
+			if raw, err := os.ReadFile(cfgPath); err == nil {
+				if err := os.WriteFile(filepath.Join(backupDir, "cmd_config."+ts+".json"), raw, 0o644); err != nil {
+					jsonOK(w, map[string]any{"ok": false, "message": "备份失败, 已取消保存: " + err.Error()})
+					return
+				}
+			}
+			// 合法校验 + 美化写回 (原子: 临时文件带随机后缀 + rename)
 			var pretty bytes.Buffer
-			if err := json.Indent(&pretty, body.Config, "", "  "); err != nil {
+			if err := json.Indent(&pretty, cfgRaw, "", "  "); err != nil {
 				jsonErr(w, 400, "配置格式化失败")
 				return
 			}
-			tmp := cfgPath + ".tmp"
-			if err := os.WriteFile(tmp, pretty.Bytes(), 0o644); err != nil {
+			tmp, err := os.CreateTemp(filepath.Dir(cfgPath), ".cmd-config-*.tmp")
+			if err != nil {
+				jsonErr(w, 500, "创建临时文件失败: "+err.Error())
+				return
+			}
+			tmpPath := tmp.Name()
+			_ = tmp.Close()
+			if err := os.WriteFile(tmpPath, pretty.Bytes(), 0o644); err != nil {
 				jsonErr(w, 500, "写入失败: "+err.Error())
 				return
 			}
-			if err := os.Rename(tmp, cfgPath); err != nil {
+			if err := os.Rename(tmpPath, cfgPath); err != nil {
+				_ = os.Remove(tmpPath)
 				jsonErr(w, 500, "替换失败: "+err.Error())
 				return
 			}
