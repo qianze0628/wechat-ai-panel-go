@@ -4,6 +4,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -267,6 +268,8 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	}
 
 	// 运行命令并捕获输出; 返回 (ok, errMsg)
+	// 注意: 不能用 cmd.Run() + StdoutPipe 组合 —— npm install 的 prepare 钩子 (husky/npx)
+	// 会派生孙进程继承管道, Run() 会等孙进程退出导致卡死。用文件重定向最可靠。
 	runCmd := func(cmd *exec.Cmd, timeout time.Duration) (bool, string) {
 		if cmd == nil {
 			return false, "命令为空"
@@ -274,21 +277,41 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		env := append(os.Environ(), extraPaths...)
 		env = append(env, "PYTHONIOENCODING=utf-8")
 		cmd.Env = env
-		stdout, _ := cmd.StdoutPipe()
-		stderr, _ := cmd.StderrPipe()
-		streamCmdOutput(stdout, stderr)
+		// stdout/stderr → 临时文件, 后台 goroutine 实时读进 Logs
+		tmpOut, err1 := os.CreateTemp("", "install-*.out")
+		tmpErr, err2 := os.CreateTemp("", "install-*.err")
+		if err1 != nil || err2 != nil {
+			return false, "创建临时日志文件失败"
+		}
+		defer os.Remove(tmpOut.Name())
+		defer os.Remove(tmpErr.Name())
+		cmd.Stdout = tmpOut
+		cmd.Stderr = tmpErr
+		if err := cmd.Start(); err != nil {
+			return false, err.Error()
+		}
+		// 实时读文件 (每 300ms 增量读)
+		stopTail := make(chan struct{})
+		go tailLogFile(tmpOut.Name(), stopTail)
+		go tailLogFile(tmpErr.Name(), stopTail)
 		done := make(chan error, 1)
-		go func() { done <- cmd.Run() }()
+		go func() { done <- cmd.Wait() }()
+		var runErr error
 		select {
 		case err := <-done:
-			if err != nil {
-				return false, err.Error()
-			}
-			return true, ""
+			runErr = err
 		case <-time.After(timeout):
 			cmd.Process.Kill()
-			return false, "执行超时"
+			runErr = fmt.Errorf("执行超时 (已强制结束)")
 		}
+		close(stopTail)
+		// 读完残留
+		tailLogFileSync(tmpOut.Name())
+		tailLogFileSync(tmpErr.Name())
+		if runErr != nil {
+			return false, runErr.Error()
+		}
+		return true, ""
 	}
 
 	// ===== 阶段 1: 环境工具链 =====
@@ -464,6 +487,64 @@ func toolManualHint(platform, name string) string {
 		return "Python 未安装。请执行: sudo apt-get install -y python3 python3-pip"
 	}
 	return "请手动安装缺失组件后重试"
+}
+
+// tailLogFile 后台增量读日志文件到 installState.Logs (每 200ms)
+func tailLogFile(path string, stop <-chan struct{}) {
+	var offset int64
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		offset = readLogIncremental(path, offset)
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// tailLogFileSync 一次性读完全部 (收尾用)
+func tailLogFileSync(path string) {
+	var offset int64
+	for {
+		n := readLogIncremental(path, offset)
+		if n == offset {
+			return
+		}
+		offset = n
+	}
+}
+
+// readLogIncremental 读取文件从 offset 起的新增行, 追加到 Logs; 返回新 offset
+func readLogIncremental(path string, offset int64) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return offset
+	}
+	defer f.Close()
+	fi, _ := f.Stat()
+	if fi == nil || fi.Size() <= offset {
+		return offset
+	}
+	// 跳到 offset
+	_, _ = f.Seek(offset, 0)
+	data := make([]byte, fi.Size()-offset)
+	n, _ := f.Read(data)
+	if n == 0 {
+		return offset
+	}
+	offset += int64(n)
+	// 按行拆分追加
+	for _, line := range strings.Split(string(data[:n]), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		installState.mu.Lock()
+		installState.Logs = append(installState.Logs, line)
+		installState.mu.Unlock()
+	}
+	return offset
 }
 
 // streamCmdOutput 实时把命令 stdout/stderr 流式写入 installState.Logs
