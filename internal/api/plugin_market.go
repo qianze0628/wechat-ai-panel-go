@@ -6,12 +6,14 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"wechat-ai-panel/internal/config"
 )
@@ -40,6 +42,52 @@ var builtinMarket = []MarketPlugin{
 // marketState 安装状态 (并发安全)
 var marketMu sync.Mutex
 var marketInstalling = map[string]bool{}
+
+// 远程市场索引 (GitHub raw, 镜像可加速; 失败回退内置)
+const (
+	marketIndexURL = "https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
+	marketIndexMirror = "https://gh-proxy.com/https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
+)
+
+var marketIndexCache []MarketPlugin
+var marketIndexCacheTime time.Time
+
+// fetchRemoteMarket 拉取远程索引 (失败回退内置), 缓存 10 分钟
+func fetchRemoteMarket() []MarketPlugin {
+	if len(marketIndexCache) > 0 && time.Since(marketIndexCacheTime) < 10*time.Minute {
+		return marketIndexCache
+	}
+	type rawIndex struct {
+		Plugins []MarketPlugin `json:"plugins"`
+	}
+	for _, u := range []string{marketIndexMirror, marketIndexURL} {
+		data, err := httpGetTimeout(u, 8000)
+		if err != nil {
+			continue
+		}
+		var idx rawIndex
+		if err := json.Unmarshal(data, &idx); err == nil && len(idx.Plugins) > 0 {
+			marketIndexCache = idx.Plugins
+			marketIndexCacheTime = time.Now()
+			return idx.Plugins
+		}
+	}
+	return nil // 回退内置
+}
+
+// httpGetTimeout 简单 HTTP GET (标准库 net/http, 支持 TLS/重定向, 超时)
+func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
+	client := &http.Client{Timeout: time.Duration(timeoutMs) * time.Millisecond}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
 
 // pluginsInstalled 判断某插件是否已安装 (有目录 + metadata)
 func pluginInstalled(cfg *config.Config, id string) bool {
@@ -82,8 +130,23 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 401, "未认证或会话已过期")
 			return
 		}
-		list := make([]MarketPlugin, 0, len(builtinMarket))
-		for _, p := range builtinMarket {
+		// 远程索引 + 内置, 按 repo 去重 (同一插件不同 id 只列一次)
+		src := fetchRemoteMarket()
+		if len(src) == 0 {
+			src = builtinMarket
+		}
+		seenRepo := map[string]bool{}
+		var merged []MarketPlugin
+		for _, p := range append(append([]MarketPlugin{}, src...), builtinMarket...) {
+			repoKey := strings.TrimSuffix(p.Repo, ".git")
+			if seenRepo[repoKey] {
+				continue
+			}
+			seenRepo[repoKey] = true
+			merged = append(merged, p)
+		}
+		list := make([]MarketPlugin, 0, len(merged))
+		for _, p := range merged {
 			np := p
 			np.Installed = pluginInstalled(cfg, p.ID) || pluginInstalled(cfg, strings.TrimPrefix(p.ID, "astrbot_plugin_"))
 			if np.Installed {
@@ -91,7 +154,7 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			}
 			list = append(list, np)
 		}
-		jsonOK(w, map[string]any{"ok": true, "plugins": list})
+		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": "remote"})
 	})
 
 	// 安装 (clone + deps)
@@ -109,14 +172,20 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 400, "需指定 id 或 repo")
 			return
 		}
-		// 解析目标: id → 内置市场
+		// 解析目标: id → 远程/内置市场
 		repo := body.Repo
 		pdir := ""
 		if repo == "" {
 			var mp *MarketPlugin
-			for i := range builtinMarket {
-				if builtinMarket[i].ID == body.ID {
-					mp = &builtinMarket[i]
+			// 先远程, 再内置
+			for _, src := range [][]MarketPlugin{fetchRemoteMarket(), builtinMarket} {
+				for i := range src {
+					if src[i].ID == body.ID {
+						mp = &src[i]
+						break
+					}
+				}
+				if mp != nil {
 					break
 				}
 			}
