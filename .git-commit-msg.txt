@@ -1,10 +1,12 @@
-Fix: 一键安装跨平台适配 + 日志捕获 + 路径回退 + qr-server env
+Feat: 一键安装流程重构
 
-1. 安装平台: 以面板实际运行系统 (runtime.GOOS) 为准, 前端传值不再覆盖
-   (修复 Linux 用户被默认装成 Windows 的问题); 前端按浏览器系统检测默认平台
-2. 安装日志: runInstall 实时捕获 npm/uv/git 的 stdout/stderr 到 installState.Logs
-   (之前只有 [start]/[done] 状态行, 看不到实际进度)
-3. 路径回退: resolve() 对 Unix /xxx 绝对路径做存在性检查, 不存在时回退 baseDir
-   同名路径; sanitizeLogPaths 确保日志目录可写 (修复容器里 /logs 权限拒绝)
-4. qr-server: startQr 启动时注入 WECHAT_LOG_FILE 环境变量 (读正确的 wechat 日志);
-   qr-server.js 已通用化并随 wechat-bot 仓库分发 (环境变量配置日志/端口)
+后端:
+- planInstallTasks 增加环境工具链检测: node/npm/uv/python 缺失时自动加入安装任务
+  (平台感知: Windows winget / macOS brew / Linux apt+curl)
+- runInstall 支持 env_node/env_uv/env_python 任务类型 (自动执行安装命令)
+- envInstallLabel/envInstallCmd 平台感知的安装提示与命令
+
+前端 (OnboardingPage):
+- 点击"安装依赖"→ 弹出平台选择弹窗 (自动检测当前系统默认, 显示将安装的缺失组件)
+- 确认后 → 进度弹窗 (indeterminate 进度条 + 实时日志流)
+- 安装完成自动关闭进度弹窗并显示完成窗
