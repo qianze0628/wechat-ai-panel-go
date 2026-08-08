@@ -194,8 +194,25 @@ func (c *Config) Load(baseDir string) error {
 	}
 
 	// 相对路径基于 baseDir 解析
+	// Unix 下 "/xxx" 会被 IsAbs 判为绝对路径; 若该路径不存在 (典型如配置里写了 /wechat-bot-windows
+	// 或 /logs 但实际是相对意图), 回退到 baseDir 下同名路径, 避免指向根目录报错。
 	resolve := func(p string) string {
-		if p == "" || filepath.IsAbs(p) {
+		if p == "" {
+			return p
+		}
+		if filepath.IsAbs(p) {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+			// 绝对路径不存在: 若看起来像相对路径误写 (去掉前导 / 后 baseDir 下存在) → 回退
+			rel := strings.TrimLeft(p, "/\\")
+			if rel != "" {
+				cand := filepath.Join(baseDir, rel)
+				if _, err := os.Stat(cand); err == nil {
+					return cand
+				}
+			}
+			// 仍不存在: 保持原样 (由后续逻辑决定; 至少不崩溃)
 			return p
 		}
 		return filepath.Join(baseDir, p)
@@ -215,7 +232,36 @@ func (c *Config) Load(baseDir string) error {
 	c.Logs.AstrbotCaptureLog = resolve(c.Logs.AstrbotCaptureLog)
 	c.Logs.WechatCaptureLog = resolve(c.Logs.WechatCaptureLog)
 
+	// 日志目录不可写 (如容器里被解析到 /logs 根目录) 时, 回退到 baseDir/logs
+	c.sanitizeLogPaths(baseDir)
+
 	return c.Validate()
+}
+
+// sanitizeLogPaths 确保日志目录可写; 不可写时回退到 baseDir/logs
+// (Linux 容器里 "logs/..." 若被误判为 /logs 或目录无权限, 会导致启动失败)
+func (c *Config) sanitizeLogPaths(baseDir string) {
+	fallback := filepath.Join(baseDir, "logs")
+	_ = os.MkdirAll(fallback, 0o755)
+	check := func(p *string) {
+		if *p == "" {
+			*p = filepath.Join(fallback, "panel.log")
+			return
+		}
+		dir := filepath.Dir(*p)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			// 无法创建 → 回退
+			*p = filepath.Join(fallback, filepath.Base(*p))
+		}
+	}
+	check(&c.Logs.AstrbotStdout)
+	check(&c.Logs.AstrbotStderr)
+	check(&c.Logs.WechatStdout)
+	check(&c.Logs.WechatStderr)
+	check(&c.Logs.QrStdout)
+	check(&c.Logs.QrStderr)
+	check(&c.Logs.AstrbotCaptureLog)
+	check(&c.Logs.WechatCaptureLog)
 }
 
 // Validate 校验配置 (错误记录到 ConfigErrors, 不阻断)

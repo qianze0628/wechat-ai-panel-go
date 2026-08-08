@@ -195,11 +195,32 @@ func (s *Services) startQr() (bool, string) {
 		return false, fmt.Sprintf("qr-server.js 不存在: %s", s.Cfg.QrServerScript)
 	}
 	dir := filepath.Dir(s.Cfg.QrServerScript)
-	cmd, err := s.spawnService("qr", []string{node, s.Cfg.QrServerScript}, dir,
-		s.Cfg.Logs.QrStdout, s.Cfg.Logs.QrStderr)
+	// 传 WECHAT_LOG_FILE 给 qr-server (让它读正确的 wechat-bot 日志; 兼容旧版默认路径)
+	env := append(BaseEnv(), "WECHAT_LOG_FILE="+s.Cfg.Logs.WechatCaptureLog)
+	fout, err1 := openLog(s.Cfg.Logs.QrStdout)
+	if err1 != nil {
+		return false, fmt.Sprintf("qr-server 日志打开失败: %v", err1)
+	}
+	ferr, err2 := openLog(s.Cfg.Logs.QrStderr)
+	if err2 != nil {
+		fout.Close()
+		return false, fmt.Sprintf("qr-server 日志打开失败: %v", err2)
+	}
+	cmd, err := Spawn(SpawnOptions{
+		Args:   []string{node, s.Cfg.QrServerScript},
+		Dir:    dir,
+		Env:    env,
+		Stdout: fout,
+		Stderr: ferr,
+	})
 	if err != nil {
+		fout.Close()
+		ferr.Close()
 		return false, fmt.Sprintf("qr-server 启动失败: %v", err)
 	}
+	s.mu.Lock()
+	s.cmd["qr"] = cmd
+	s.mu.Unlock()
 	return true, fmt.Sprintf("qr-server 已启动 (PID %d)", cmd.Process.Pid)
 }
 

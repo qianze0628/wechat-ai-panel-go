@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -102,6 +103,39 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		}
 		if cmd != nil {
 			cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+			// 实时捕获 stdout/stderr 到 installState.Logs (让前端能看到安装进度)
+			stdout, _ := cmd.StdoutPipe()
+			stderr, _ := cmd.StderrPipe()
+			if stdout != nil {
+				go func() {
+					sc := bufio.NewScanner(stdout)
+					sc.Buffer(make([]byte, 64*1024), 1024*1024)
+					for sc.Scan() {
+						line := strings.TrimRight(sc.Text(), "\r")
+						if line == "" {
+							continue
+						}
+						installState.mu.Lock()
+						installState.Logs = append(installState.Logs, line)
+						installState.mu.Unlock()
+					}
+				}()
+			}
+			if stderr != nil {
+				go func() {
+					sc := bufio.NewScanner(stderr)
+					sc.Buffer(make([]byte, 64*1024), 1024*1024)
+					for sc.Scan() {
+						line := strings.TrimRight(sc.Text(), "\r")
+						if line == "" {
+							continue
+						}
+						installState.mu.Lock()
+						installState.Logs = append(installState.Logs, line)
+						installState.mu.Unlock()
+					}
+				}()
+			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Run() }()
 			select {
@@ -175,10 +209,13 @@ func (h *Handler) RegisterInstall(cfg *config.Config) {
 		wechatDir := cfg.WechatBotDir
 		astrbotRoot := cfg.AstrbotRoot
 		wechatRepo := cfg.WechatBotRepo
+		// 前端可能传 platform (浏览器系统), 但安装必须基于面板实际运行系统
+		// (runtime.GOOS)。前端传的值仅在校验通过时作为提示, 不覆盖真实平台。
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		if p, ok := body["platform"].(string); ok && p != "" {
-			platform = p
+			// 仅在面板真实平台无效时 (理论上不会) 使用前端值; 否则以 detectPlatform 为准
+			_ = p
 		}
 		if d, ok := body["wechat_dir"].(string); ok && d != "" {
 			wechatDir = d
