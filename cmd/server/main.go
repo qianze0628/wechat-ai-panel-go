@@ -122,6 +122,8 @@ func main() {
 	srv.RegisterAstrbot(&cfg)
 	// 插件中心 (扫描 AstrBot 插件 + 配置读写 + 连通状态)
 	srv.RegisterPluginCenter(&cfg)
+	// AstrBot 配置文件读写 (仿 AstrBot 配置文件页, 自动备份)
+	srv.RegisterCmdConfig(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// 安装引擎

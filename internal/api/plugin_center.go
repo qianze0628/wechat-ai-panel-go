@@ -7,6 +7,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"wechat-ai-panel/internal/config"
 )
@@ -265,4 +267,86 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 			"ok": true, "message": fmt.Sprintf("插件已%s (重启 AstrBot 生效)", map[bool]string{true: "启用", false: "禁用"}[enabledStr == "true"]),
 		})
 	})
+}
+
+// RegisterCmdConfig 注册 AstrBot 配置文件读写 API (仿 AstrBot 配置文件页)
+//   - GET  /api/cmd-config   读取 cmd_config.json (备份后)
+//   - POST /api/cmd-config   保存 (原子写 + 自动备份)
+func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
+	h.mux.HandleFunc("/api/cmd-config", func(w http.ResponseWriter, r *http.Request) {
+		cfgPath := cfg.Astrbot.CmdConfig
+		if _, err := os.Stat(cfgPath); err != nil {
+			jsonErr(w, 404, "cmd_config.json 不存在: "+cfgPath)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			data, err := os.ReadFile(cfgPath)
+			if err != nil {
+				jsonErr(w, 500, "读取失败: "+err.Error())
+				return
+			}
+			// 兼容 BOM
+			raw := strings.TrimPrefix(string(data), "")
+			jsonOK(w, map[string]any{"ok": true, "config": json.RawMessage(raw), "path": cfgPath})
+		case http.MethodPost:
+			var body struct {
+				Config json.RawMessage `json:"config"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Config) == 0 {
+				jsonErr(w, 400, "请求体需含 config")
+				return
+			}
+			// 备份当前配置
+			backupDir := filepath.Join(cfg.AstrbotDataDir, "backups")
+			_ = os.MkdirAll(backupDir, 0o755)
+			ts := time.Now().Format("20060102-150405")
+			if raw, err := os.ReadFile(cfgPath); err == nil {
+				_ = os.WriteFile(filepath.Join(backupDir, "cmd_config."+ts+".json"), raw, 0o644)
+			}
+			// 校验 JSON
+			if !json.Valid(body.Config) {
+				jsonErr(w, 400, "配置不是合法 JSON")
+				return
+			}
+			// 美化写回 (原子: 临时 + rename)
+			var pretty bytes.Buffer
+			if err := json.Indent(&pretty, body.Config, "", "  "); err != nil {
+				jsonErr(w, 400, "配置格式化失败")
+				return
+			}
+			tmp := cfgPath + ".tmp"
+			if err := os.WriteFile(tmp, pretty.Bytes(), 0o644); err != nil {
+				jsonErr(w, 500, "写入失败: "+err.Error())
+				return
+			}
+			if err := os.Rename(tmp, cfgPath); err != nil {
+				jsonErr(w, 500, "替换失败: "+err.Error())
+				return
+			}
+			// 备份文件保留最近 10 份
+			cleanupOldBackups(backupDir, 10)
+			jsonOK(w, map[string]any{"ok": true, "message": "配置已保存 (重启 AstrBot 生效)", "backup": true})
+		default:
+			jsonErr(w, 405, "仅支持 GET/POST")
+		}
+	})
+}
+
+// cleanupOldBackups 保留最近 N 份备份, 删除更早的
+func cleanupOldBackups(dir string, keep int) {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "cmd_config.") && strings.HasSuffix(f.Name(), ".json") {
+			names = append(names, f.Name())
+		}
+	}
+	sort.Strings(names) // 时间戳命名 → 字典序 = 时间序
+	for i := 0; i < len(names)-keep; i++ {
+		_ = os.Remove(filepath.Join(dir, names[i]))
+	}
 }

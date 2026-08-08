@@ -79,21 +79,9 @@ func New(webFS fs.FS) *Handler {
 	h.mux.HandleFunc("/api/start", h.handleServiceControl)
 	h.mux.HandleFunc("/api/stop", h.handleServiceControl)
 	h.mux.HandleFunc("/api/restart", h.handleServiceControl)
-	// 插件列表 (Go 版内置插件元数据; 对应 Py 版 install/messages 插件,
-	// 让前端侧边栏显示"插件"分区; Go 后端已实现对应 API)
+	// 插件列表: 已由插件中心 (/api/plugin-center) 接管, 此处返回空 (兼容旧前端) 或简单指引
 	h.mux.HandleFunc("/api/plugins", func(w http.ResponseWriter, r *http.Request) {
-		jsonOK(w, map[string]any{"ok": true, "plugins": []any{
-			map[string]any{
-				"id": "install", "name": "依赖安装", "description": "多平台依赖安装引擎",
-				"version": "1.0.0", "enabled": true,
-				"nav": map[string]any{"to": "/plugin/install", "label": "依赖安装（插件）", "icon": "Puzzle"},
-			},
-			map[string]any{
-				"id": "messages", "name": "消息记录", "description": "微信消息记录",
-				"version": "1.0.0", "enabled": true,
-				"nav": map[string]any{"to": "/plugin/messages", "label": "插件示例：消息记录", "icon": "Puzzle"},
-			},
-		}})
+		jsonOK(w, map[string]any{"ok": true, "plugins": []any{}})
 	})
 	return h
 }
