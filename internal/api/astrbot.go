@@ -113,11 +113,19 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 
 	// 凭据
 	h.HandleFunc("/api/astrbot/creds", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		jsonOK(w, ExtractCreds(cfg))
 	})
 
 	// whitelist contacts
 	h.HandleFunc("/api/whitelist/contacts", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		data, err := ac.api("contacts", "GET", nil)
 		if err != nil {
 			jsonOK(w, map[string]any{"ok": false, "message": err.Error(), "contacts": []any{}, "rooms": []any{}})
@@ -180,6 +188,10 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 
 	// whitelist GET (含 nameMap)
 	h.HandleFunc("/api/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
 		if r.Method == http.MethodPost {
 			var payload struct {
 				ChatIDs              []string            `json:"chatIds"`

@@ -52,7 +52,11 @@ func (h *Handler) RegisterProvider(cfg *config.Config) {
 				jsonErr(w, 500, "读取 cmd_config 失败: "+err.Error())
 				return
 			}
-			// 组装 providers (校验每项是对象)
+			// 组装 providers (校验每项是对象); 空数组不覆盖旧列表 (防误清空)
+			if len(body.Providers) == 0 {
+				jsonErr(w, 400, "providers 不能为空数组 (如需清空请传 null)")
+				return
+			}
 			var provArr []any
 			for _, raw := range body.Providers {
 				var one map[string]any

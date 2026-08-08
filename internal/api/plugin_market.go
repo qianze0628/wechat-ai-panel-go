@@ -51,9 +51,12 @@ const (
 
 var marketIndexCache []MarketPlugin
 var marketIndexCacheTime time.Time
+var marketIndexMu sync.Mutex
 
-// fetchRemoteMarket 拉取远程索引 (失败回退内置), 缓存 10 分钟
+// fetchRemoteMarket 拉取远程索引 (失败回退内置), 缓存 10 分钟; 加锁防并发竞态
 func fetchRemoteMarket() []MarketPlugin {
+	marketIndexMu.Lock()
+	defer marketIndexMu.Unlock()
 	if len(marketIndexCache) > 0 && time.Since(marketIndexCacheTime) < 10*time.Minute {
 		return marketIndexCache
 	}
@@ -86,7 +89,8 @@ func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	// 限制响应体大小 (防恶意大索引)
+	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 }
 
 // pluginsInstalled 判断某插件是否已安装 (有目录 + metadata)
@@ -196,9 +200,23 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			repo = mp.Repo
 			pdir = filepath.Join(pluginsDir(cfg), mp.ID)
 		} else {
-			// 自定义 repo → 用仓库名作目录
-			name := strings.TrimSuffix(filepath.Base(repo), ".git")
+			// 自定义 repo → 用仓库名作目录 (安全校验: 拒绝路径穿越/绝对路径/盘符)
+			// 仅允许 https:// 协议
+			if !strings.HasPrefix(repo, "https://") && !strings.HasPrefix(repo, "http://") {
+				jsonErr(w, 400, "repo 仅支持 http(s) 地址")
+				return
+			}
+			name := strings.TrimSuffix(filepath.Base(strings.TrimRight(repo, "/")), ".git")
+			if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+				jsonErr(w, 400, "非法的仓库地址")
+				return
+			}
 			pdir = filepath.Join(pluginsDir(cfg), name)
+			// 最终仍校验路径在 plugins 内
+			if rel, err := filepath.Rel(pluginsDir(cfg), pdir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				jsonErr(w, 400, "非法的仓库地址")
+				return
+			}
 		}
 		// 并发限制
 		marketMu.Lock()

@@ -80,8 +80,12 @@ func (h *Handler) RegisterAPIKey(cfg *config.Config) {
 		case http.MethodPost:
 			// 语义: body.key 非空 → 撤销; 否则生成
 			var body struct{ Key string `json:"key"` }
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			if decErr := json.NewDecoder(r.Body).Decode(&body); decErr != nil {
+				jsonErr(w, 400, "请求体需为合法 JSON")
+				return
+			}
 			_ = os.MkdirAll(dataDir, 0o700)
+			_ = os.Chmod(dataDir, 0o700)
 			keys, _ := readAPIKeys(dataDir)
 			if body.Key != "" {
 				// 撤销

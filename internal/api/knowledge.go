@@ -45,6 +45,9 @@ func (h *Handler) RegisterKB(cfg *config.Config) {
 					names = append(names, s)
 				}
 			}
+			if names == nil {
+				names = []string{}
+			}
 			kbCfg := map[string]any{
 				"kb_names":              names,
 				"default_kb_collection": ps["default_kb_collection"],
