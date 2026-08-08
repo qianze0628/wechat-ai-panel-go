@@ -20,4 +20,4 @@ cmd/server/web/assets/
 
 # 系统
 Thumbs.db
-.DS_Store
+.DS_Storeruntime/.panel_keys/
