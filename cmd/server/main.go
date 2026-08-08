@@ -89,7 +89,7 @@ func main() {
 		}
 		return map[string]any{
 			"ok":      true,
-			"version": "go-v0.2",
+			"version": "v0.2.0",
 			"env":     envMap,
 			"services":           serviceStatus(&cfg),
 			"creds":              api.ExtractCreds(&cfg),
@@ -141,6 +141,9 @@ func main() {
 	srv.RegisterAutostart()
 	// 更新检测 (GitHub latest + IP 判断国内镜像)
 	srv.RegisterUpdate()
+	// 面板内置自动更新 (下载→替换→重启)
+	api.SetVersionTag("v0.2.0")
+	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
 	svc.EnsureAll()

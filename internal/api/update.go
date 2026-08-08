@@ -88,23 +88,36 @@ func fetchLatestRelease() (*ReleaseInfo, error) {
 	return &rel, nil
 }
 
-// versionIsNewer 语义版本比较 (v0.1.9 vs v0.2.0)
+// versionIsNewer 语义版本比较 (v0.1.9 vs v0.2.0; 容忍 go-v0.2 这类前缀)
+// 注意: /api/status 的 version 是 "go-v0.2" 内部号, 前端会把它当当前版本传入,
+// 必须能正确换算成 [0,2,0] 族以与 v0.2.0 比较。
 func versionIsNewer(latest, current string) bool {
 	parse := func(v string) []int {
-		v = strings.TrimPrefix(v, "v")
-		var out []int
+		// 提取所有数字段 (容忍任意前缀/后缀字母)
+		var nums []int
 		for _, part := range strings.Split(v, ".") {
-			n := 0
+			digits := ""
 			for _, c := range part {
 				if c >= '0' && c <= '9' {
-					n = n*10 + int(c-'0')
-				} else {
+					digits += string(c)
+				} else if digits != "" {
 					break
 				}
 			}
-			out = append(out, n)
+			if digits == "" {
+				continue // 纯非数字段 (如 "go-" 前缀) 跳过
+			}
+			n := 0
+			for _, c := range digits {
+				n = n*10 + int(c-'0')
+			}
+			nums = append(nums, n)
 		}
-		return out
+		// 无数字段 (如纯 build tag) 视为 0
+		if len(nums) == 0 {
+			nums = []int{0, 0, 0}
+		}
+		return nums
 	}
 	l, c := parse(latest), parse(current)
 	for i := 0; i < len(l) || i < len(c); i++ {
