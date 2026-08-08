@@ -91,6 +91,24 @@ func parseMetadataYaml(content string) map[string]any {
 	return out
 }
 
+
+// safePluginDir 安全拼接插件目录: 拒绝路径穿越 (id 只能是插件子目录名)
+func safePluginDir(cfg *config.Config, id string) (string, bool) {
+	base := pluginsDir(cfg)
+	if id == "" || strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+		return "", false
+	}
+	pdir := filepath.Join(base, id)
+	rel, err := filepath.Rel(base, pdir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	if fi, err := os.Stat(pdir); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	return pdir, true
+}
+
 // scanPlugins 扫描插件目录, 返回插件列表
 func scanPlugins(cfg *config.Config) []PluginInfo {
 	dir := pluginsDir(cfg)
@@ -198,13 +216,9 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 			return
 		}
 		id := r.URL.Query().Get("id")
-		if id == "" {
-			jsonErr(w, 400, "缺少插件 id")
-			return
-		}
-		pdir := filepath.Join(pluginsDir(cfg), id)
-		if _, err := os.Stat(pdir); err != nil {
-			jsonErr(w, 404, "插件不存在: "+id)
+		pdir, ok := safePluginDir(cfg, id)
+		if !ok {
+			jsonErr(w, 400, "非法的插件 id")
 			return
 		}
 		switch r.Method {
@@ -261,13 +275,9 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 		}
 		id := r.URL.Query().Get("id")
 		enabledStr := r.URL.Query().Get("enabled")
-		if id == "" {
-			jsonErr(w, 400, "缺少插件 id")
-			return
-		}
-		pdir := filepath.Join(pluginsDir(cfg), id)
-		if _, err := os.Stat(pdir); err != nil {
-			jsonErr(w, 404, "插件不存在: "+id)
+		pdir, ok := safePluginDir(cfg, id)
+		if !ok {
+			jsonErr(w, 400, "非法的插件 id")
 			return
 		}
 		disabledFile := filepath.Join(pdir, ".disabled")

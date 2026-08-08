@@ -124,6 +124,10 @@ func main() {
 	srv.RegisterPluginCenter(&cfg)
 	// AstrBot 配置文件读写 (仿 AstrBot 配置文件页, 自动备份)
 	srv.RegisterCmdConfig(&cfg)
+	// 插件市场 (GitHub 源列表 + 安装/卸载)
+	srv.RegisterPluginMarket(&cfg)
+	// 模型提供商管理 (cmd_config provider 列表 CRUD)
+	srv.RegisterProvider(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// 安装引擎
