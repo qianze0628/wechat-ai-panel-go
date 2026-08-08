@@ -128,6 +128,8 @@ func main() {
 	srv.RegisterPluginMarket(&cfg)
 	// 模型提供商管理 (cmd_config provider 列表 CRUD)
 	srv.RegisterProvider(&cfg)
+	// 知识库管理 (kb 配置字段 + 文件清单)
+	srv.RegisterKB(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// 安装引擎
