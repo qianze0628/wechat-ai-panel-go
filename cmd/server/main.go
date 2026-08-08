@@ -129,6 +129,9 @@ func main() {
 	srv.RegisterSettings(&cfg)
 	api.SetSettingsConfigPath(filepath.Join(baseDir, "config.json"))
 	api.SetBackupEnabled(cfg.BackupEnabled)
+	// AstrBot 群聊 ICL 补丁自动恢复 (升级冲掉后自动重打, 防止群聊"答非所问")
+	api.EnsureGroupChatPatch()
+	srv.RegisterPatch()
 	// 重启 AstrBot 注入 (恢复/配置用)
 	api.SetRestartFn(func(c *config.Config) {
 		svc.Stop("astrbot")

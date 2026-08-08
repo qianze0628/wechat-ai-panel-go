@@ -621,16 +621,20 @@ class WhitelistManager(Star):
         ps["id_whitelist"] = wl
         _write_config(cfg)
         # 更新 wechat-bot .env 白名单 (备注名+名字双写, 按名字) + 重启 wechat-bot
+        # 同时重启 AstrBot: 其内存 whitelist (WhitelistCheckStage.initialize 一次性读入)
+        # 不会自动刷新, 不重启会导致新加联系人消息被 session allowlist 拦截 (不回消息)
         if typ == "联系人":
             names = list(dict.fromkeys(_read_env_names() + [name, raw_name]))
             _update_wechat_bot_env(names, _read_env_rooms())
             _restart_wechat_bot_async()
-            yield event.plain_result(f"✅ 已添加联系人『{name}』到白名单，正在重启 wechat-bot 生效...")
+            _restart_astrbot_async()
+            yield event.plain_result(f"✅ 已添加联系人『{name}』到白名单，正在重启生效...")
         else:
             rooms = list(dict.fromkeys(_read_env_rooms() + [name]))
             _update_wechat_bot_env(_read_env_names(), rooms)
             _restart_wechat_bot_async()
-            yield event.plain_result(f"✅ 已添加群聊『{name}』到白名单，正在重启 wechat-bot 生效...")
+            _restart_astrbot_async()
+            yield event.plain_result(f"✅ 已添加群聊『{name}』到白名单，正在重启生效...")
 
     @filter.command("白名单移除")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -687,16 +691,19 @@ class WhitelistManager(Star):
         ps["id_whitelist"] = wl
         _write_config(cfg)
         # 同步 wechat-bot .env 白名单 (删备注名+微信名) + 重启 wechat-bot
+        # 同时重启 AstrBot: 其内存 whitelist 不会自动刷新, 不重启移除后仍可能放行/漏拦
         if typ == "联系人":
             names = [n for n in _read_env_names() if n != name and n != raw_name]
             _update_wechat_bot_env(names, _read_env_rooms())
             _restart_wechat_bot_async()
-            yield event.plain_result(f"✅ 已移除联系人『{name}』({hid}) 从聊天白名单，正在重启 wechat-bot 生效...")
+            _restart_astrbot_async()
+            yield event.plain_result(f"✅ 已移除联系人『{name}』({hid}) 从聊天白名单，正在重启生效...")
         elif typ == "群聊":
             rooms = [r for r in _read_env_rooms() if r != name]
             _update_wechat_bot_env(_read_env_names(), rooms)
             _restart_wechat_bot_async()
-            yield event.plain_result(f"✅ 已移除群聊『{name}』({hid}) 从聊天白名单，正在重启 wechat-bot 生效...")
+            _restart_astrbot_async()
+            yield event.plain_result(f"✅ 已移除群聊『{name}』({hid}) 从聊天白名单，正在重启生效...")
         else:
             _restart_astrbot_async()
             yield event.plain_result(f"✅ 已移除 {typ}『{name}』({hid}) 从聊天白名单，正在自动重启生效...")
