@@ -140,6 +140,18 @@ func logsPath(cfg *config.Config, service string) string {
 			return installLogPath
 		}
 		return filepath.Join(panelBaseDir(), "logs", "install.log")
+	case "trace":
+		// AstrBot Trace 日志 (相对 cmd_config 的 trace_log_path, 基于 data 目录解析)
+		if m, err := util.ReadJSONFile(cfg.Astrbot.CmdConfig); err == nil {
+			if tp, ok := m["trace_log_path"].(string); ok && tp != "" {
+				p := filepath.Clean(tp)
+				if !filepath.IsAbs(p) {
+					p = filepath.Join(cfg.AstrbotDataDir, p)
+				}
+				return p
+			}
+		}
+		return filepath.Join(cfg.AstrbotDataDir, "logs", "astrbot.trace.log")
 	default: // wechat
 		return cfg.Logs.WechatStdout
 	}
