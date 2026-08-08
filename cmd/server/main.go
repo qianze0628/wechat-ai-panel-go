@@ -144,6 +144,7 @@ func main() {
 	// 面板设置 (认证/备份开关), 需在 RegisterAuth 之后
 	srv.RegisterSettings(&cfg)
 	api.SetSettingsConfigPath(filepath.Join(baseDir, "config.json"))
+	api.SetSettingsConfigLocalPath(filepath.Join(baseDir, "config.local.json"))
 	api.SetBackupEnabled(cfg.BackupEnabled)
 	// AstrBot 群聊 ICL 补丁自动恢复 (升级冲掉后自动重打, 防止群聊"答非所问")
 	api.EnsureGroupChatPatch()

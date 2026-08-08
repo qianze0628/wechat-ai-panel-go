@@ -12,14 +12,26 @@ import (
 
 // settingsConfigPath 主 config.json 的路径 (由 RegisterSettings 注入, 解决 exe/cwd 差异)
 var settingsConfigPath = ""
+var settingsConfigLocalPath = ""
 
 // SetSettingsConfigPath 设置 config.json 完整路径 (main.go 注入)
 func SetSettingsConfigPath(path string) { settingsConfigPath = path }
+
+// SetSettingsConfigLocalPath 设置 config.local.json 完整路径 (main.go 注入)
+func SetSettingsConfigLocalPath(path string) { settingsConfigLocalPath = path }
 
 // configFilePath 主 config.json (config.local.json 只读覆盖, 设置页写主文件)
 func configFilePath(cfg *config.Config) string {
 	if settingsConfigPath != "" {
 		return settingsConfigPath
+	}
+	return ""
+}
+
+// configLocalFilePath config.local.json (网络设置写这里, 覆盖主文件)
+func configLocalFilePath(cfg *config.Config) string {
+	if settingsConfigLocalPath != "" {
+		return settingsConfigLocalPath
 	}
 	return ""
 }
@@ -51,6 +63,11 @@ func (h *Handler) RegisterSettings(cfg *config.Config) {
 			var body struct {
 				PanelPassword *string `json:"panel_password"`
 				BackupEnabled *bool   `json:"backup_enabled"`
+				Host          *string `json:"host"`
+				Port          *int    `json:"port"`
+				MirrorNpm     *string `json:"mirror_npm"`
+				MirrorPypi    *string `json:"mirror_pypi"`
+				MirrorGit     *string `json:"mirror_git"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				jsonErr(w, 400, "请求体必须是 JSON")
@@ -91,6 +108,49 @@ func (h *Handler) RegisterSettings(cfg *config.Config) {
 						changes = append(changes, "配置备份已启用")
 					} else {
 						changes = append(changes, "配置备份已关闭")
+					}
+				}
+			}
+			// 网络: host / port / 镜像 (写 config.local.json)
+			if body.Host != nil || body.Port != nil || body.MirrorNpm != nil || body.MirrorPypi != nil || body.MirrorGit != nil {
+				localPath := configLocalFilePath(cfg)
+				var lm map[string]any
+				if localPath != "" {
+					lm, _ = util.ReadJSONFile(localPath)
+				}
+				if lm == nil {
+					lm = map[string]any{}
+				}
+				// mirrors 子对象
+				if body.MirrorNpm != nil || body.MirrorPypi != nil || body.MirrorGit != nil {
+					mir, _ := lm["mirrors"].(map[string]any)
+					if mir == nil {
+						mir = map[string]any{}
+					}
+					if body.MirrorNpm != nil {
+						mir["npm_registry"] = *body.MirrorNpm
+					}
+					if body.MirrorPypi != nil {
+						mir["pypi_index"] = *body.MirrorPypi
+					}
+					if body.MirrorGit != nil {
+						mir["git_clone_proxy"] = *body.MirrorGit
+					}
+					lm["mirrors"] = mir
+					changes = append(changes, "镜像配置已更新")
+				}
+				if body.Host != nil {
+					lm["host"] = *body.Host
+					changes = append(changes, "监听地址已更新 (重启生效)")
+				}
+				if body.Port != nil {
+					lm["port"] = *body.Port
+					changes = append(changes, "端口已更新 (重启生效)")
+				}
+				if localPath != "" {
+					if err := util.AtomicWriteJSON(localPath, lm, true); err != nil {
+						jsonErr(w, 500, "写入 config.local.json 失败: "+err.Error())
+						return
 					}
 				}
 			}
