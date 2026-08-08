@@ -4,6 +4,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,15 +44,17 @@ var builtinMarket = []MarketPlugin{
 var marketMu sync.Mutex
 var marketInstalling = map[string]bool{}
 
-// 远程市场索引 (GitHub raw, 镜像可加速; 失败回退内置)
+// 远程市场索引 (GitHub raw + api.github.com 兜底 + 镜像; 失败回退内置)
 const (
-	marketIndexURL = "https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
+	marketIndexURL    = "https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
+	marketIndexURLAPI = "https://api.github.com/repos/qianze0628/wechat-ai-panel-go/contents/market_index.json"
 	marketIndexMirror = "https://gh-proxy.com/https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
 )
 
 var marketIndexCache []MarketPlugin
 var marketIndexCacheTime time.Time
 var marketIndexMu sync.Mutex
+var marketSourceNote = "cache"
 
 // fetchRemoteMarket 拉取远程索引 (失败回退内置), 缓存 10 分钟; 加锁防并发竞态
 func fetchRemoteMarket() []MarketPlugin {
@@ -60,18 +63,42 @@ func fetchRemoteMarket() []MarketPlugin {
 	if len(marketIndexCache) > 0 && time.Since(marketIndexCacheTime) < 10*time.Minute {
 		return marketIndexCache
 	}
+	marketSourceNote = "all-failed"
 	type rawIndex struct {
 		Plugins []MarketPlugin `json:"plugins"`
 	}
-	for _, u := range []string{marketIndexMirror, marketIndexURL} {
-		data, err := httpGetTimeout(u, 8000)
+	// 直连 raw → api.github.com (base64) → 镜像, 任一成功; 加长超时
+	for _, u := range []string{marketIndexURL, marketIndexURLAPI, marketIndexMirror} {
+		data, err := httpGetTimeout(u, 12000)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[market] fetch %s failed: %v\n", u, err)
 			continue
 		}
+		// api.github.com 返回 {content: base64}
 		var idx rawIndex
+		if strings.Contains(u, "api.github.com") {
+			var apiResp struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(data, &apiResp); err != nil || apiResp.Content == "" {
+				continue
+			}
+			decoded, err := base64.StdEncoding.DecodeString(apiResp.Content)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(decoded, &idx); err == nil && len(idx.Plugins) > 0 {
+				marketIndexCache = idx.Plugins
+				marketIndexCacheTime = time.Now()
+				marketSourceNote = "api.github.com"
+				return idx.Plugins
+			}
+			continue
+		}
 		if err := json.Unmarshal(data, &idx); err == nil && len(idx.Plugins) > 0 {
 			marketIndexCache = idx.Plugins
 			marketIndexCacheTime = time.Now()
+			marketSourceNote = u[:40]
 			return idx.Plugins
 		}
 	}
@@ -81,7 +108,10 @@ func fetchRemoteMarket() []MarketPlugin {
 // httpGetTimeout 简单 HTTP GET (标准库 net/http, 支持 TLS/重定向, 超时)
 func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
 	client := &http.Client{Timeout: time.Duration(timeoutMs) * time.Millisecond}
-	resp, err := client.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("User-Agent", "wechat-ai-panel")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +195,8 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			}
 			list = append(list, np)
 		}
-		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": "remote"})
+		// 调试: 报告最近一个远程源错误
+		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote})
 	})
 
 	// 安装 (clone + deps)
