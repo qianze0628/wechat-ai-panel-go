@@ -121,6 +121,8 @@ func main() {
 	// 安装引擎
 	srv.RegisterInstall(&cfg)
 	api.SetInstallLogPath(filepath.Join(baseDir, "logs", "install.log"))
+	// 国内镜像源 (npm/pypi/git 加速, 免代理)
+	api.SetMirrors(cfg.Mirrors.NpmRegistry, cfg.Mirrors.PypiIndex, cfg.Mirrors.GitCloneProxy)
 	// 面板认证
 	srv.RegisterAuth(&cfg)
 	// 面板设置 (认证/备份开关), 需在 RegisterAuth 之后

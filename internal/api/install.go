@@ -53,6 +53,20 @@ var installLogPath = ""
 // SetInstallLogPath 由 main.go 注入 (与面板其他日志同目录)
 func SetInstallLogPath(path string) { installLogPath = path }
 
+// 国内镜像源 (由 main.go 从配置注入; 空=直连)
+var (
+	mirrorNpmRegistry   = ""
+	mirrorPypiIndex     = ""
+	mirrorGitCloneProxy = ""
+)
+
+// SetMirrors 注入镜像源配置
+func SetMirrors(npm, pypi, gitProxy string) {
+	mirrorNpmRegistry = npm
+	mirrorPypiIndex = pypi
+	mirrorGitCloneProxy = gitProxy
+}
+
 // stageIDs 阶段顺序与百分比权重 (参考 AstrBot UpdateProgress 的加权模型)
 var stagePlan = []struct {
 	id     string
@@ -296,6 +310,10 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		}
 		env := append(os.Environ(), extraPaths...)
 		env = append(env, "PYTHONIOENCODING=utf-8")
+		// 国内镜像 env (uv/pip 用 UV_INDEX_URL; npm 用 registry 参数)
+		if mirrorPypiIndex != "" {
+			env = append(env, "UV_INDEX_URL="+mirrorPypiIndex, "PIP_INDEX_URL="+mirrorPypiIndex)
+		}
 		cmd.Env = env
 		// stdout/stderr → 临时文件, 后台 goroutine 实时读进 Logs
 		tmpOut, err1 := os.CreateTemp("", "install-*.out")
@@ -378,13 +396,40 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	if cloneTask != nil {
 		addLog("[clone] [start] " + cloneTask["label"])
 		_ = os.MkdirAll(wechatDir, 0o755)
-		cmd := exec.Command("git", "clone", "--depth", "1", cloneTask["repo"], wechatDir)
-		ok2, errMsg := runCmd(cmd, 600*time.Second)
-		if !ok2 {
-			stageDone("clone", "git clone 失败", errMsg)
+		repo := cloneTask["repo"]
+		// 国内加速: 优先镜像代理 (ghproxy 类), 失败自动回退直连
+		cloneOK := false
+		var cloneErr string
+		if mirrorGitCloneProxy != "" {
+			proxied := mirrorGitCloneProxy + strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
+			addLog("[clone] [info] 尝试镜像加速: " + proxied)
+			cmd := exec.Command("git", "clone", "--depth", "1", proxied, wechatDir)
+			var ok2 bool
+			ok2, cloneErr = runCmd(cmd, 300*time.Second)
+			if !ok2 {
+				// 清半成品再试直连
+				_ = os.RemoveAll(wechatDir)
+				_ = os.MkdirAll(wechatDir, 0o755)
+				addLog("[clone] [warn] 镜像失败, 回退直连: " + cloneErr)
+			} else {
+				cloneOK = true
+			}
+		}
+		if !cloneOK {
+			cmd := exec.Command("git", "clone", "--depth", "1", repo, wechatDir)
+			ok2, errMsg := runCmd(cmd, 600*time.Second)
+			if ok2 {
+				cloneOK = true
+				cloneErr = ""
+			} else {
+				cloneErr = errMsg
+			}
+		}
+		if !cloneOK {
+			stageDone("clone", "git clone 失败", cloneErr)
 			installState.mu.Lock()
 			installState.NeedManual = true
-			installState.ManualHint = "git clone 失败: " + errMsg + "\n可手动执行: git clone --depth 1 " + cloneTask["repo"] + " " + wechatDir
+			installState.ManualHint = "git clone 失败: " + cloneErr + "\n可手动执行: git clone --depth 1 " + repo + " " + wechatDir
 			installState.mu.Unlock()
 			finishInstall(false)
 			return
@@ -399,7 +444,11 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	nmExists := fileExists(filepath.Join(wechatDir, "node_modules"))
 	if pkgExists && !nmExists {
 		addLog("[npm] [start] npm install (wechat-bot)")
-		cmd := exec.Command("npm", "install")
+		args := []string{"install"}
+		if mirrorNpmRegistry != "" {
+			args = append(args, "--registry="+mirrorNpmRegistry)
+		}
+		cmd := exec.Command("npm", args...)
 		cmd.Dir = wechatDir
 		ok2, errMsg := runCmd(cmd, 600*time.Second)
 		if !ok2 {

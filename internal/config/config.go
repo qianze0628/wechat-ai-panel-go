@@ -24,10 +24,18 @@ type Config struct {
 	BackupDir      string     `json:"backup_dir"`
 	BackupEnabled  bool       `json:"backup_enabled"`  // 是否创建配置备份 (默认 true)
 	WechatBotRepo  string     `json:"wechat_bot_repo"` // wechat-bot 优化版源码仓库 (非空时缺源码自动 clone)
+	Mirrors        Mirrors    `json:"mirrors"` // 国内镜像源 (加速下载, 免代理)
 	Logs           LogPaths   `json:"logs"`
 	Services       Services   `json:"services"`
 	Astrbot        AstrConfig `json:"astrbot"`
 	ConfigErrors   []string   `json:"-"`
+}
+
+// Mirrors 国内镜像源配置 (默认国内常用镜像, 可按需覆盖/留空禁用)
+type Mirrors struct {
+	NpmRegistry   string `json:"npm_registry"`   // npm 镜像 (默认 npmmirror)
+	PypiIndex     string `json:"pypi_index"`     // pip/uv 镜像 (默认阿里云)
+	GitCloneProxy string `json:"git_clone_proxy"` // git clone 加速前缀 (如 ghproxy 类, 空=直连)
 }
 
 // LogPaths 日志路径
@@ -117,6 +125,14 @@ func Default() Config {
 			WSPort:      20129,
 			WakePrefix:  []string{"/"},
 			Dashboard:   Dashboard{Enable: true, Host: "0.0.0.0", Port: 6185},
+		},
+		// 国内镜像源默认值 (免代理加速下载; 用户可覆盖/清空禁用)
+		// 注: git_clone_proxy 默认空 (ghproxy 类公共服务不稳定, 失败率高;
+		// 用户在 config 里可配置一个可用的加速前缀)
+		Mirrors: Mirrors{
+			NpmRegistry:   "https://registry.npmmirror.com",
+			PypiIndex:     "https://mirrors.aliyun.com/pypi/simple/",
+			GitCloneProxy: "",
 		},
 	}
 }

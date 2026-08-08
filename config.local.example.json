@@ -11,6 +11,12 @@
   "qr_server_script": "qr-server.js",
   "wechat_bot_serve": "ChatGPT",
   "backup_enabled": true,
+  "mirrors": {
+    "_comment": "国内镜像源 (免代理加速下载; 留空=直连原站)。git_clone_proxy: GitHub 加速前缀 (ghproxy 类公共服务不稳定, 如失效请在 gh-proxy.com 等可用源中挑选, 或留空直连)",
+    "npm_registry": "https://registry.npmmirror.com",
+    "pypi_index": "https://mirrors.aliyun.com/pypi/simple/",
+    "git_clone_proxy": ""
+  },
   "astrbot": {
     "cmd_config": "cmd_config.json",
     "ws_port": 20129
