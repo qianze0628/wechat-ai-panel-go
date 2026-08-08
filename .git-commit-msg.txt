@@ -1,12 +1,7 @@
-Feat: 一键安装流程重构
+Feat: 界面仿照 AstrBot 优化
 
-后端:
-- planInstallTasks 增加环境工具链检测: node/npm/uv/python 缺失时自动加入安装任务
-  (平台感知: Windows winget / macOS brew / Linux apt+curl)
-- runInstall 支持 env_node/env_uv/env_python 任务类型 (自动执行安装命令)
-- envInstallLabel/envInstallCmd 平台感知的安装提示与命令
-
-前端 (OnboardingPage):
-- 点击"安装依赖"→ 弹出平台选择弹窗 (自动检测当前系统默认, 显示将安装的缺失组件)
-- 确认后 → 进度弹窗 (indeterminate 进度条 + 实时日志流)
-- 安装完成自动关闭进度弹窗并显示完成窗
+- 主题默认主色改为 AstrBot 品牌蓝 #3C96CA (深色 #5BA4D4), 新增"深海蓝"预设 #2F86BD
+- 卡片 hover 上浮动效 (translateY(-2px), 仿 AstrBot item-card)
+- 主操作按钮胶囊化 (48px 圆角, 仿 AstrBot "创建机器人" 主按钮)
+- 应用到概览/部署向导/连接配置页卡片与按钮
+- 一键安装: 平台选择弹窗 + 进度弹窗 (进度条 + 实时日志)
