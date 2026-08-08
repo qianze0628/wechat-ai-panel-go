@@ -79,7 +79,13 @@ func (a *AuthStore) IssueToken() string {
 func (h *Handler) RegisterAuth(cfg *config.Config) {
 	auth := NewAuth(cfg)
 	// 注入写操作认证检查
-	h.authCheck = func(r *http.Request) bool { return auth.Check(r) }
+	h.authCheck = func(r *http.Request) bool {
+		// 面板会话或 API Key 任一有效即通过 (API Key 用于自动化调用)
+		if apiKeyValid(cfg, r) {
+			return true
+		}
+		return auth.Check(r)
+	}
 
 	h.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		auth.mu.Lock()
