@@ -36,9 +36,8 @@ func (h *Handler) RegisterKB(cfg *config.Config) {
 				jsonErr(w, 500, "读取 cmd_config 失败: "+err.Error())
 				return
 			}
-			// 读 kb 配置
-			ps, _ := m["provider_settings"].(map[string]any)
-			kbNames, _ := ps["kb_names"].([]any)
+			// 读 kb 配置 (AstrBot 的 kb_* 字段在 cmd_config 顶层, 不在 provider_settings)
+			kbNames, _ := m["kb_names"].([]any)
 			var names []string
 			for _, n := range kbNames {
 				if s, ok := n.(string); ok {
@@ -50,10 +49,10 @@ func (h *Handler) RegisterKB(cfg *config.Config) {
 			}
 			kbCfg := map[string]any{
 				"kb_names":              names,
-				"default_kb_collection": ps["default_kb_collection"],
-				"kb_fusion_top_k":       ps["kb_fusion_top_k"],
-				"kb_final_top_k":        ps["kb_final_top_k"],
-				"kb_agentic_mode":       ps["kb_agentic_mode"],
+				"default_kb_collection": m["default_kb_collection"],
+				"kb_fusion_top_k":       m["kb_fusion_top_k"],
+				"kb_final_top_k":        m["kb_final_top_k"],
+				"kb_agentic_mode":       m["kb_agentic_mode"],
 			}
 			// 文件清单 (data/knowledge_base/)
 			files := []map[string]any{}
@@ -85,22 +84,18 @@ func (h *Handler) RegisterKB(cfg *config.Config) {
 				jsonErr(w, 500, "读取 cmd_config 失败: "+err.Error())
 				return
 			}
-			ps, _ := m["provider_settings"].(map[string]any)
-			if ps == nil {
-				ps = map[string]any{}
-			}
-			ps["kb_names"] = body.KbNames
-			ps["default_kb_collection"] = body.DefaultCollection
+			// AstrBot 的 kb_* 在顶层; 保存也写顶层 (对齐 default schema)
+			m["kb_names"] = body.KbNames
+			m["default_kb_collection"] = body.DefaultCollection
 			if body.FusionTopK != nil {
-				ps["kb_fusion_top_k"] = *body.FusionTopK
+				m["kb_fusion_top_k"] = *body.FusionTopK
 			}
 			if body.FinalTopK != nil {
-				ps["kb_final_top_k"] = *body.FinalTopK
+				m["kb_final_top_k"] = *body.FinalTopK
 			}
 			if body.AgenticMode != nil {
-				ps["kb_agentic_mode"] = *body.AgenticMode
+				m["kb_agentic_mode"] = *body.AgenticMode
 			}
-			m["provider_settings"] = ps
 			if err := writeJSONAtomicBackup(cfgPath, cfg.AstrbotDataDir, m); err != nil {
 				jsonErr(w, 500, "保存失败: "+err.Error())
 				return

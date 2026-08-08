@@ -115,7 +115,14 @@ func pluginLocalVersion(cfg *config.Config, id string) string {
 		for _, line := range strings.Split(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "version:") {
-				return strings.TrimSpace(strings.TrimPrefix(line, "version:"))
+				v := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
+				v = strings.Trim(v, `"'`)
+				// 去行内注释 (如 "v1.0.0 # 版本号")
+				if ci := strings.Index(v, " #"); ci >= 0 {
+					v = strings.TrimSpace(v[:ci])
+				}
+				v = strings.TrimPrefix(v, "v")
+				return v
 			}
 		}
 	}
