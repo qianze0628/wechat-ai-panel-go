@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -338,41 +339,51 @@ func errFromCmd(err error, name string) error {
 // installPluginFromRepo clone + 依赖安装
 func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 	_ = os.MkdirAll(pluginsDir(cfg), 0o755)
+	// 重装/覆盖: 先清残留目录 (避免 git clone 到非空目录失败)
+	if _, err := os.Stat(pdir); err == nil {
+		_ = os.RemoveAll(pdir)
+	}
 	// git clone (depth 1; 镜像加速)
 	cloneURL := repo
 	if cfg.Mirrors.GitCloneProxy != "" {
 		cloneURL = cfg.Mirrors.GitCloneProxy + strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
 	}
-	cmd := exec.Command("git", "clone", "--depth", "1", cloneURL, pdir)
+	// git clone 超时 120s (防挂起)
+	cloneCtx, cancelClone := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancelClone()
+	cmd := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", cloneURL, pdir)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		// 若镜像失败回退直连
-		cmd2 := exec.Command("git", "clone", "--depth", "1", repo, pdir)
+		// 若镜像失败回退直连 (清残留再试)
+		_ = os.RemoveAll(pdir)
+		cmd2 := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", repo, pdir)
 		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 			return fmt.Errorf("clone 失败: %s / %s", out, out2)
 		}
 		_ = out
 	}
-	// requirements.txt 依赖安装: 用 astrbot 相同 Python 环境 (uv 装的)
+	// requirements.txt 依赖安装: 用 astrbot 相同 Python 环境 (uv 装的), 超时 300s
 	req := filepath.Join(pdir, "requirements.txt")
 	if _, err := os.Stat(req); err == nil {
 		var cmd *exec.Cmd
-		// 优先: uv --python 指向 astrbot 环境
-		if uvPath := which2("uv"); uvPath != "" {
-			if py := astrbotPythonPath(); py != "" {
-				cmd = exec.Command(uvPath, "pip", "install", "--python", py, "-r", req)
-			} else {
-				cmd = exec.Command(uvPath, "pip", "install", "-r", req)
-			}
-		} else if py := which2("python"); py != "" {
-			cmd = exec.Command(py, "-m", "pip", "install", "-r", req)
+		// 优先: uv --python 指向 astrbot 环境 (Linux/macOS 与 Windows 都可用)
+		py := astrbotPythonPath()
+		if uvPath := which2("uv"); uvPath != "" && py != "" {
+			cmd = exec.Command(uvPath, "pip", "install", "--python", py, "-r", req)
+		} else if py2 := which2("python"); py2 != "" && which2("uv") == "" {
+			// 无 uv 用 python -m pip
+			cmd = exec.Command(py2, "-m", "pip", "install", "-r", req)
 		} else {
-			return fmt.Errorf("依赖安装失败: 未找到 uv 或 python")
+			// 找不到 astrbot 环境 → 明确报错 (不走必失败的 uv pip 无解释器分支)
+			return fmt.Errorf("依赖安装失败: 未定位 astrbot 的 Python 环境. 请确认 astrbot 用 uv/pipx 安装")
 		}
 		// uv 吃 UV_INDEX_URL, pip 吃 PIP_INDEX_URL — 两种都注入保证镜像生效
 		cmd.Env = append(os.Environ(),
 			"UV_INDEX_URL="+cfg.Mirrors.PypiIndex,
 			"PIP_INDEX_URL="+cfg.Mirrors.PypiIndex,
 		)
+		depsCtx, cancelDeps := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancelDeps()
+		cmd = exec.CommandContext(depsCtx, cmd.Path, cmd.Args[1:]...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("依赖安装失败: %s %v", out, err)
 		}
@@ -380,12 +391,17 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 	return nil
 }
 
-// astrbotPythonPath 定位 astrbot 工具环境内的 python (Windows: uv tools/astrbot/Scripts/python.exe)
+// astrbotPythonPath 定位 astrbot 工具环境内的 python (跨平台)
 func astrbotPythonPath() string {
 	home, _ := os.UserHomeDir()
+	// 平台分隔符处理: Windows 用 \ 分隔, Unix 用 /
 	candidates := []string{
-		filepath.Join(home, `AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`),
-		filepath.Join(home, `.local\share\uv\tools\astrbot\bin\python`),
+		// Windows: uv tool install 布局
+		filepath.Join(home, "AppData", "Roaming", "uv", "tools", "astrbot", "Scripts", "python.exe"),
+		// Linux/macOS: uv tool install 布局
+		filepath.Join(home, ".local", "share", "uv", "tools", "astrbot", "bin", "python"),
+		// pipx 布局
+		filepath.Join(home, ".local", "pipx", "venvs", "astrbot", "bin", "python"),
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
