@@ -5,6 +5,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,8 +16,8 @@ import (
 )
 
 // RegisterProvider 模型提供商 API
-//   - GET  /api/providers            读 provider 列表 + provider_settings
-//   - POST /api/providers            保存完整列表+settings (原子写, 备份)
+//   - GET  /api/providers            读 provider_sources + provider 列表 + provider_settings
+//   - POST /api/providers            保存完整 groups (原子写, 备份)
 func (h *Handler) RegisterProvider(cfg *config.Config) {
 	h.mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
 		if h.authCheck != nil && !h.authCheck(r) {
@@ -36,11 +37,13 @@ func (h *Handler) RegisterProvider(cfg *config.Config) {
 				return
 			}
 			providers, _ := m["provider"].([]any)
+			sources, _ := m["provider_sources"].([]any)
 			ps, _ := m["provider_settings"].(map[string]any)
-			jsonOK(w, map[string]any{"ok": true, "providers": providers, "provider_settings": ps})
+			jsonOK(w, map[string]any{"ok": true, "providers": providers, "provider_sources": sources, "provider_settings": ps})
 		case http.MethodPost:
 			var body struct {
 				Providers []json.RawMessage `json:"providers"`
+				Sources   []json.RawMessage `json:"provider_sources"`
 				Settings  map[string]any     `json:"provider_settings"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -52,28 +55,42 @@ func (h *Handler) RegisterProvider(cfg *config.Config) {
 				jsonErr(w, 500, "读取 cmd_config 失败: "+err.Error())
 				return
 			}
-			// 组装 providers (校验每项是对象); 空数组不覆盖旧列表 (防误清空)
-			if len(body.Providers) == 0 {
-				jsonErr(w, 400, "providers 不能为空数组 (如需清空请传 null)")
-				return
-			}
-			var provArr []any
-			for _, raw := range body.Providers {
-				var one map[string]any
-				single := json.RawMessage(raw)
-				if len(single) > 0 && single[0] == '"' {
-					var s string
-					if err := json.Unmarshal(single, &s); err == nil {
-						single = json.RawMessage(s)
+			// 通用解析: RawMessage 数组 → []any (兼容字符串内嵌)
+			parseArr := func(items []json.RawMessage, name string) ([]any, error) {
+				var out []any
+				for _, raw := range items {
+					var one map[string]any
+					single := json.RawMessage(raw)
+					if len(single) > 0 && single[0] == '"' {
+						var s string
+						if err := json.Unmarshal(single, &s); err == nil {
+							single = json.RawMessage(s)
+						}
 					}
+					if err := json.Unmarshal(single, &one); err != nil {
+						return nil, fmt.Errorf("%s 项必须是对象", name)
+					}
+					out = append(out, one)
 				}
-				if err := json.Unmarshal(single, &one); err != nil {
-					jsonErr(w, 400, "providers 项必须是对象")
+				return out, nil
+			}
+			// 全量组: provider + provider_sources (空数组也接受=清空)
+			if body.Providers != nil {
+				provArr, err := parseArr(body.Providers, "providers")
+				if err != nil {
+					jsonErr(w, 400, err.Error())
 					return
 				}
-				provArr = append(provArr, one)
+				m["provider"] = provArr
 			}
-			m["provider"] = provArr
+			if body.Sources != nil {
+				srcArr, err := parseArr(body.Sources, "provider_sources")
+				if err != nil {
+					jsonErr(w, 400, err.Error())
+					return
+				}
+				m["provider_sources"] = srcArr
+			}
 			if body.Settings != nil {
 				m["provider_settings"] = body.Settings
 			}
