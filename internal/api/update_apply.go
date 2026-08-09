@@ -243,7 +243,7 @@ func currentVersionShort() string {
 }
 
 // versionTag 当前面板版本 (main.go 注入; /api/status 也用它, 单一来源)
-var versionTag = "v0.3.0"
+var versionTag = "v0.3.1"
 
 // SetVersionTag 注入当前版本
 func SetVersionTag(v string) { versionTag = v }
