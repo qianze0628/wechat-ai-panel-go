@@ -134,6 +134,8 @@ func main() {
 	srv.RegisterAPIKey(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
+	// ChatUI 链路测试 (信息→wechatbot→AstrBot→模型)
+	srv.RegisterChat(&cfg)
 	// 安装引擎
 	srv.RegisterInstall(&cfg)
 	api.SetInstallLogPath(filepath.Join(baseDir, "logs", "install.log"))
