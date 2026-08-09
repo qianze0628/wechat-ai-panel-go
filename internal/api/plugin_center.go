@@ -246,8 +246,19 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 				return
 			}
 			val, _ := body["config"].(map[string]any)
+			// 深合并已有配置 (前端只传改动项, 未传的键保留 — 修复: 之前整体替换丢未传键)
+			merged := map[string]any{}
+			if raw, err := os.ReadFile(filepath.Join(pdir, "config.json")); err == nil {
+				var old map[string]any
+				if json.Unmarshal(raw, &old) == nil && old != nil {
+					merged = old
+				}
+			}
+			for k, v := range val {
+				merged[k] = v
+			}
 			// 写 config.json (原子: 先写临时再 rename)
-			raw, _ := json.MarshalIndent(val, "", "  ")
+			raw, _ := json.MarshalIndent(merged, "", "  ")
 			tmp := filepath.Join(pdir, "config.json.tmp")
 			if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 				jsonErr(w, 500, "写入失败: "+err.Error())

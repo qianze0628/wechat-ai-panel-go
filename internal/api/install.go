@@ -163,7 +163,8 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 		switch platform {
 		case "windows":
 			// winget 是 Win10/11 自带; 失败会进入日志, 用户可手动到 nodejs.org 下载
-			return exec.Command("winget", "install", "--id", "OpenJS.NodeJS.LTS", "--accept-source-agreements", "--accept-package-agreements", "--silent")
+			// 改走 cmd 包一层 chcp 65001 (UTF-8) 防日志乱码
+			return exec.Command("cmd", "/c", "chcp 65001>nul && winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent")
 		case "mac":
 			return exec.Command("brew", "install", "node")
 		default: // linux
@@ -188,23 +189,27 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 				urlGhfast = mirrorGitCloneProxy + "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
 			}
 			// 用 PowerShell 依次尝试 (镜像→ghfast→直连), 解压 zip 到 %USERPROFILE%\.local\bin
-			ps := "$target = Join-Path $env:USERPROFILE '.local\\bin'; " +
+			// 修复: 全英文输出避免 GBK 乱码; 目标 uv.exe 共存时先改名旧的再复制; 最后必须 Test-Path 成功才 exit 0
+			ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " +
+				"$target = Join-Path $env:USERPROFILE '.local\\bin'; " +
 				"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
 				"$zip = Join-Path $env:TEMP 'uv-installer.zip'; " +
 				"$urls = @('" + urlMirror + "'); " +
 				"if ('" + urlGhfast + "' -ne '') { $urls = @('" + urlGhfast + "') + $urls }; " +
 				"$urls = $urls + @('" + urlDirect + "'); " +
 				"$ok = $false; " +
-				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 60; if ((Get-Item $zip).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[下载失败] ' + $u + ' : ' + $_.Exception.Message); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
-				"if (-not $ok) { Write-Error '所有源下载失败, 请手动安装 uv (https://github.com/astral-sh/uv/releases)'; exit 1 }; " +
+				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 90; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
+				"if (-not $ok) { Write-Error 'uv download failed from all sources. Manual install: https://github.com/astral-sh/uv/releases'; exit 1 }; " +
 				"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
 				"$tmp = Join-Path $env:TEMP ('uv' + [guid]::NewGuid().ToString('N')); " +
 				"[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp); " +
+				"$probe = Join-Path $target 'uv.exe'; " +
+				"if (Test-Path $probe) { Rename-Item $probe ($probe + '.old') -Force -ErrorAction SilentlyContinue }; " +
 				"Copy-Item -Path (Join-Path $tmp 'uv.exe') -Destination $target -Force; " +
 				"Copy-Item -Path (Join-Path $tmp 'uvx.exe') -Destination $target -Force -ErrorAction SilentlyContinue; " +
 				"Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; " +
-				"if (-not (Test-Path (Join-Path $target 'uv.exe'))) { Write-Error 'uv.exe 解压失败'; exit 1 }; " +
-				"Write-Output 'uv 安装完成'; exit 0"
+				"if (-not (Test-Path $probe)) { Write-Error 'uv.exe extract failed'; exit 1 }; " +
+				"Write-Output 'uv install OK'; exit 0"
 			return exec.Command("powershell", "-NoProfile", "-Command", ps)
 		}
 		// Linux/macOS: 官方脚本 (带 ghproxy 镜像加速), 失败提示手动
@@ -216,7 +221,7 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 	case "python":
 		switch platform {
 		case "windows":
-			return exec.Command("winget", "install", "--id", "Python.Python.3.12", "--accept-source-agreements", "--accept-package-agreements", "--silent")
+			return exec.Command("cmd", "/c", "chcp 65001>nul && winget install --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent")
 		case "mac":
 			return exec.Command("brew", "install", "python@3.12")
 		default:

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,12 +73,28 @@ func findAstrbotExePath() string {
 	return which2("astrbot")
 }
 
+// which2 查找可执行文件: PATH + Windows 常见安装目录回退
+// 修复: uv 官方脚本装到 %USERPROFILE%\.local\bin (curl) 或 Roaming\uv\bin (pip),
+// 面板进程 PATH 是启动快照, 安装后新目录不在 PATH → LookPath 找不到 → "安装后仍不可用"
 func which2(name string) string {
-	p, err := exec.LookPath(name)
-	if err != nil {
-		return ""
+	if p, err := exec.LookPath(name); err == nil {
+		return p
 	}
-	return p
+	home, _ := os.UserHomeDir()
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	candidates := []string{}
+	for _, sub := range []string{".local\\bin", "AppData\\Roaming\\uv\\bin", "AppData\\Roaming\\uv"} {
+		candidates = append(candidates, filepath.Join(home, sub, name+ext))
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
 }
 
 // RegisterMonitor 注册监控路由 (env/system/logs/messages)

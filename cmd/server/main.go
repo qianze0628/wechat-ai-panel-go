@@ -128,14 +128,13 @@ func main() {
 	srv.RegisterPluginMarket(&cfg)
 	// 模型提供商管理 (cmd_config provider 列表 CRUD)
 	srv.RegisterProvider(&cfg)
-	// 知识库管理 (kb 配置字段 + 文件清单)
-	srv.RegisterKB(&cfg)
 	// 面板 API 密钥 (OpenAPI 形态)
 	srv.RegisterAPIKey(&cfg)
 	// 二维码
 	srv.RegisterQr(&cfg)
 	// ChatUI 链路测试 (信息→wechatbot→AstrBot→模型)
 	srv.RegisterChat(&cfg)
+	// MCP/Skills 管理入口移除 (让用户在 AstrBot 内自行配置; 2026-08)
 	// 安装引擎
 	srv.RegisterInstall(&cfg)
 	api.SetInstallLogPath(filepath.Join(baseDir, "logs", "install.log"))
@@ -157,7 +156,7 @@ func main() {
 	// 更新检测 (GitHub latest + IP 判断国内镜像)
 	srv.RegisterUpdate()
 	// 面板内置自动更新 (下载→替换→重启)
-	api.SetVersionTag("v0.3.2")
+	api.SetVersionTag("v0.4.0")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
