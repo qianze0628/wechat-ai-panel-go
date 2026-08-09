@@ -61,25 +61,39 @@ func (h *Handler) RegisterChat(cfg *config.Config) {
 			jsonErr(w, 401, "未认证或会话已过期")
 			return
 		}
+		user := r.URL.Query().Get("user")
 		content := util.ReadTail(cfg.Logs.WechatStdout, 512*1024)
 		replies := []map[string]any{}
 		lines := strings.Split(content, "\n")
 		for i := len(lines) - 1; i >= 0 && len(replies) < 10; i-- {
 			line := strings.TrimSpace(lines[i])
-			if strings.Contains(line, "发送消息:") && (strings.Contains(line, "→") || strings.Contains(line, "user=")) {
-				// 提取回复文本 (📤 发送消息: xxx → user=...)
+			if strings.Contains(line, "发送消息:") && strings.Contains(line, "→") {
+				// 提取回复文本 + 目标 user (C1: 按 user 过滤, 只显示本次会话)
 				idx := strings.Index(line, "发送消息:")
 				if idx >= 0 {
 					rest := strings.TrimSpace(line[idx+len("发送消息:"):])
-					// 去掉 → user= 尾部
 					text := rest
-					if j := strings.Index(rest, " → "); j >= 0 {
+					targetUser := ""
+					if j := strings.Index(rest, " → user="); j >= 0 {
 						text = rest[:j]
+						rest2 := rest[j+len(" → user="):]
+						if k := strings.Index(rest2, " "); k >= 0 {
+							targetUser = rest2[:k]
+						} else {
+							targetUser = rest2
+						}
+					}
+					// 图片 base64 摘要不显示
+					if strings.Contains(text, "image=base64") || strings.Contains(text, "image=无") {
+						continue
+					}
+					if user != "" && targetUser != user {
+						continue
 					}
 					text = strings.TrimSpace(text)
 					text = strings.Trim(text, `"'`)
 					replies = append(replies, map[string]any{
-						"text": text, "time": time.Now().Unix() - int64(i/2),
+						"text": text, "time": time.Now().Unix() - int64(i/2), "user": targetUser,
 					})
 				}
 			}
