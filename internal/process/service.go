@@ -47,8 +47,11 @@ func (s *Services) HealthCheck(name string) (bool, map[string]any) {
 		webui := PortListening(s.Cfg.Services.Astrbot.WebUIPort)
 		ws := PortListening(s.Cfg.Services.Astrbot.WSPort)
 		webuiHTTP := HTTPOK(fmt.Sprintf("http://127.0.0.1:%d", s.Cfg.Services.Astrbot.WebUIPort), 3*time.Second)
-		return webui && ws && webuiHTTP, map[string]any{
-			"webui_port": webui, "ws_port": ws, "webui_http": webuiHTTP,
+		wsHTTP := HTTPOK(fmt.Sprintf("http://127.0.0.1:%d", s.Cfg.Services.Astrbot.WSPort), 3*time.Second)
+		// 健康 = ws 端口 HTTP 通 (平台运行) 或 webui 通 (dashboard 起); 二者任一即算运行
+		healthy := (ws && wsHTTP) || (webui && webuiHTTP)
+		return healthy, map[string]any{
+			"webui_port": webui, "ws_port": ws, "webui_http": webuiHTTP, "ws_http": wsHTTP,
 		}
 	case "wechat":
 		ok := HTTPOK(fmt.Sprintf("http://127.0.0.1:%d/api/status", s.Cfg.Services.Wechat.APIPort), 3*time.Second)
