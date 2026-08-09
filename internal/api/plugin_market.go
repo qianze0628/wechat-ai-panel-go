@@ -212,7 +212,7 @@ func pluginLocalVersion(cfg *config.Config, id string) string {
 //   - GET   /api/market/plugins        市场列表 (+安装状态)
 //   - POST  /api/market/install        {id|repo} 安装 (clone + deps)
 //   - POST  /api/market/uninstall      {id} 卸载
-//   - GET   /api/market/status        安装进程状态
+//   - GET   /api/market/status        安装进程状态 (实现对齐注释)
 func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 	// 市场列表
 	h.mux.HandleFunc("/api/market/plugins", func(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +261,21 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			list = filtered
 		}
 		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote, "total": len(list), "installed_count": installedAll})
+	})
+
+	// 安装进程状态 (对齐注释: 返回正在安装的插件目录)
+	h.mux.HandleFunc("/api/market/status", func(w http.ResponseWriter, r *http.Request) {
+		if h.authCheck != nil && !h.authCheck(r) {
+			jsonErr(w, 401, "未认证或会话已过期")
+			return
+		}
+		marketMu.Lock()
+		installing := make([]string, 0, len(marketInstalling))
+		for k := range marketInstalling {
+			installing = append(installing, k)
+		}
+		marketMu.Unlock()
+		jsonOK(w, map[string]any{"ok": true, "installing": installing, "count": len(installing)})
 	})
 
 	// 安装 (clone + deps)
