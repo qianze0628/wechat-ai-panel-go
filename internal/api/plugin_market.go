@@ -91,7 +91,7 @@ func fetchRemoteMarket() []MarketPlugin {
 				Desc             string   `json:"desc"`
 				Author           string   `json:"author"`
 				Repo             string   `json:"repo"`
-				Tags             []string `json:"tags"`
+				Tags             json.RawMessage `json:"tags"`
 				Version          string   `json:"version"`
 				Logo             string   `json:"logo"`
 				Stars            int      `json:"stars"`
@@ -107,6 +107,19 @@ func fetchRemoteMarket() []MarketPlugin {
 			if name == "" {
 				name = id // 商店无 display_name 时 fallback 到 id
 			}
+			// tags 容错: 数组或字符串 (BUG-3: 3 个插件 tags 是字符串, 原被整体丢弃)
+			var tags []string
+			if len(p.Tags) > 0 {
+				var arr []string
+				if err := json.Unmarshal(p.Tags, &arr); err == nil {
+					tags = arr
+				} else {
+					var s string
+					if err := json.Unmarshal(p.Tags, &s); err == nil && s != "" {
+						tags = []string{s}
+					}
+				}
+			}
 			m := MarketPlugin{
 				ID:              id,
 				Name:            name,
@@ -114,7 +127,7 @@ func fetchRemoteMarket() []MarketPlugin {
 				Desc:            p.Desc,
 				Author:          p.Author,
 				Version:         p.Version,
-				Tags:            p.Tags,
+				Tags:            tags,
 				Logo:            p.Logo,
 				Stars:           p.Stars,
 				AstrbotVersion:  p.AstrbotVersion,
@@ -162,8 +175,20 @@ func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 }
 
+// candidateDirNames 可能的插件目录名集合 (id 本身/去前缀/连字符转下划线/仓库名)
+func candidateDirNames(id, repo string) []string {
+	names := []string{}
+	if id != "" {
+		names = append(names, id, strings.TrimPrefix(id, "astrbot_plugin_"), strings.ReplaceAll(id, "-", "_"))
+	}
+	if repo != "" {
+		names = append(names, strings.TrimSuffix(filepath.Base(repo), ".git"))
+	}
+	return names
+}
+
 // pluginsInstalled 判断某插件是否已安装 (有目录 + metadata)
-// 匹配: id 目录 / 去下划线前缀 / 仓库 basename (商店 id 连字符 vs 目录下划线)
+// 匹配: id 目录 / 去前缀 / 仓库 basename (商店 id 连字符 vs 目录下划线)
 func pluginsInstalledByRole(cfg *config.Config, id, repo string) bool {
 	names := map[string]bool{}
 	// 各种可能的目录名: id 本身, 去 astrbot_plugin_ 前缀, 仓库名
@@ -246,7 +271,8 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 		seenRepo := map[string]bool{}
 		var merged []MarketPlugin
 		for _, p := range append(append([]MarketPlugin{}, src...), builtinMarket...) {
-			repoKey := strings.TrimSuffix(p.Repo, ".git")
+			// 去重键小写 (BUG-2: 22 组大小写变体同名仓库避免互相覆盖)
+			repoKey := strings.ToLower(strings.TrimSuffix(p.Repo, ".git"))
 			if repoKey == "" || seenRepo[repoKey] {
 				continue
 			}
@@ -411,13 +437,19 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 400, "需指定 id")
 			return
 		}
-		pdir, ok := safePluginDir(cfg, body.ID)
-		if !ok {
-			jsonErr(w, 400, "非法的插件 id")
-			return
+		// 卸载按多候选目录: 商店 id 连字符 ≠ 仓库名下划线 (BUG-1 修复: 437/1293 原无法卸载)
+		removed := 0
+		for _, name := range candidateDirNames(body.ID, "") {
+			pdir, ok := safePluginDir(cfg, name)
+			if !ok {
+				continue
+			}
+			if err := os.RemoveAll(pdir); err == nil {
+				removed++
+			}
 		}
-		if err := os.RemoveAll(pdir); err != nil {
-			jsonErr(w, 500, "卸载失败: "+err.Error())
+		if removed == 0 {
+			jsonErr(w, 400, "非法的插件 id")
 			return
 		}
 		jsonOK(w, map[string]any{"ok": true, "message": "插件已卸载 (重启 AstrBot 生效)"})
