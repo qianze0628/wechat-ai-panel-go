@@ -91,9 +91,13 @@ func fetchRemoteMarket() []MarketPlugin {
 			if err := json.Unmarshal(raw, &p); err != nil {
 				continue
 			}
+			name := p.DisplayName
+			if name == "" {
+				name = id // 商店无 display_name 时 fallback 到 id
+			}
 			m := MarketPlugin{
 				ID:      id,
-				Name:    p.DisplayName,
+				Name:    name,
 				Repo:    p.Repo,
 				Desc:    p.Desc,
 				Author:  p.Author,
@@ -141,39 +145,67 @@ func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
 }
 
 // pluginsInstalled 判断某插件是否已安装 (有目录 + metadata)
-func pluginInstalled(cfg *config.Config, id string) bool {
-	pdir := filepath.Join(pluginsDir(cfg), id)
-	if _, err := os.Stat(filepath.Join(pdir, "metadata.yaml")); err == nil {
-		return true
+// 匹配: id 目录 / 去下划线前缀 / 仓库 basename (商店 id 连字符 vs 目录下划线)
+func pluginsInstalledByRole(cfg *config.Config, id, repo string) bool {
+	names := map[string]bool{}
+	// 各种可能的目录名: id 本身, 去 astrbot_plugin_ 前缀, 仓库名
+	if id != "" {
+		names[id] = true
+		names[strings.TrimPrefix(id, "astrbot_plugin_")] = true
+		names[strings.ReplaceAll(id, "-", "_")] = true
 	}
-	// 兼容: 目录存在且含 main.py
-	if fi, err := os.Stat(pdir); err == nil && fi.IsDir() {
-		if _, err2 := os.Stat(filepath.Join(pdir, "main.py")); err2 == nil {
+	if repo != "" {
+		names[strings.TrimSuffix(filepath.Base(repo), ".git")] = true
+	}
+	for n := range names {
+		pdir := filepath.Join(pluginsDir(cfg), n)
+		if _, err := os.Stat(filepath.Join(pdir, "metadata.yaml")); err == nil {
 			return true
+		}
+		if fi, err := os.Stat(pdir); err == nil && fi.IsDir() {
+			if _, err2 := os.Stat(filepath.Join(pdir, "main.py")); err2 == nil {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// pluginLocalVersion 读本地插件版本 (metadata)
-func pluginLocalVersion(cfg *config.Config, id string) string {
-	pdir := filepath.Join(pluginsDir(cfg), id)
-	if raw, err := os.ReadFile(filepath.Join(pdir, "metadata.yaml")); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "version:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
-				v = strings.Trim(v, `"'`)
-				// 去行内注释 (如 "v1.0.0 # 版本号")
-				if ci := strings.Index(v, " #"); ci >= 0 {
-					v = strings.TrimSpace(v[:ci])
+func pluginInstalled(cfg *config.Config, id string) bool {
+	return pluginsInstalledByRole(cfg, id, "")
+}
+
+// pluginLocalVersion 读本地插件版本 (metadata; 多候选目录名)
+func pluginLocalVersionByRole(cfg *config.Config, id, repo string) string {
+	names := []string{}
+	if id != "" {
+		names = append(names, id, strings.TrimPrefix(id, "astrbot_plugin_"), strings.ReplaceAll(id, "-", "_"))
+	}
+	if repo != "" {
+		names = append(names, strings.TrimSuffix(filepath.Base(repo), ".git"))
+	}
+	for _, dir := range names {
+		pdir := filepath.Join(pluginsDir(cfg), dir)
+		if raw, err := os.ReadFile(filepath.Join(pdir, "metadata.yaml")); err == nil {
+			for _, line := range strings.Split(string(raw), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "version:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
+					v = strings.Trim(v, `"'`)
+					if ci := strings.Index(v, " #"); ci >= 0 {
+						v = strings.TrimSpace(v[:ci])
+					}
+					v = strings.TrimPrefix(v, "v")
+					return v
 				}
-				v = strings.TrimPrefix(v, "v")
-				return v
 			}
 		}
 	}
 	return ""
+}
+
+func pluginLocalVersion(cfg *config.Config, id string) string {
+	return pluginLocalVersionByRole(cfg, id, "")
 }
 
 // RegisterPluginMarket 插件市场 API
@@ -204,11 +236,13 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			merged = append(merged, p)
 		}
 		list := make([]MarketPlugin, 0, len(merged))
+		installedAll := 0
 		for _, p := range merged {
 			np := p
-			np.Installed = pluginInstalled(cfg, p.ID) || pluginInstalled(cfg, strings.TrimPrefix(p.ID, "astrbot_plugin_"))
+			np.Installed = pluginsInstalledByRole(cfg, p.ID, p.Repo)
 			if np.Installed {
-				np.LocalVer = pluginLocalVersion(cfg, p.ID)
+				np.LocalVer = pluginLocalVersionByRole(cfg, p.ID, p.Repo)
+				installedAll++
 			}
 			list = append(list, np)
 		}
@@ -226,7 +260,7 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			}
 			list = filtered
 		}
-		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote, "total": len(list)})
+		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote, "total": len(list), "installed_count": installedAll})
 	})
 
 	// 安装 (clone + deps)
@@ -249,8 +283,16 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 		pdir := ""
 		if repo == "" {
 			var mp *MarketPlugin
-			// 先远程, 再内置
-			for _, src := range [][]MarketPlugin{fetchRemoteMarket(), builtinMarket} {
+			// 先查缓存(快速路径), 未命中再拉全量 (冷启动/未开过市场页时)
+			marketIndexMu.Lock()
+			cached := marketIndexCache
+			marketIndexMu.Unlock()
+			srcs := [][]MarketPlugin{cached}
+			if len(cached) == 0 {
+				srcs = append(srcs, fetchRemoteMarket())
+			}
+			srcs = append(srcs, builtinMarket)
+			for _, src := range srcs {
 				for i := range src {
 					if src[i].ID == body.ID {
 						mp = &src[i]
@@ -265,8 +307,18 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 				jsonErr(w, 404, "市场无此插件: "+body.ID)
 				return
 			}
+			if mp.Repo == "" {
+				jsonErr(w, 400, "该插件无仓库地址, 无法安装")
+				return
+			}
 			repo = mp.Repo
-			pdir = filepath.Join(pluginsDir(cfg), mp.ID)
+			// 目录用仓库 basename (与 AstrBot 插件目录/克隆一致; 商店 id 连字符 ≠ 仓库名下划线)
+			repoName := strings.TrimSuffix(filepath.Base(repo), ".git")
+			if repoName == "" || strings.ContainsAny(repoName, "/\\") {
+				jsonErr(w, 400, "非法的仓库地址")
+				return
+			}
+			pdir = filepath.Join(pluginsDir(cfg), repoName)
 		} else {
 			// 自定义 repo → 用仓库名作目录 (安全校验: 拒绝路径穿越/绝对路径/盘符)
 			// 仅允许 https:// 协议
