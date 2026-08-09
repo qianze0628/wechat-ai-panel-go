@@ -5,7 +5,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,11 +44,10 @@ var builtinMarket = []MarketPlugin{
 var marketMu sync.Mutex
 var marketInstalling = map[string]bool{}
 
-// 远程市场索引 (GitHub raw + api.github.com 兜底 + 镜像; 失败回退内置)
+// AstrBot 官方插件商店 (api.soulter.top; 与 AstrBot WebUI 同源, 1293+ 插件)
 const (
-	marketIndexURL    = "https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
-	marketIndexURLAPI = "https://api.github.com/repos/qianze0628/wechat-ai-panel-go/contents/market_index.json"
-	marketIndexMirror = "https://gh-proxy.com/https://raw.githubusercontent.com/qianze0628/wechat-ai-panel-go/master/market_index.json"
+	marketIndexURL    = "https://api.soulter.top/astrbot/plugins?format=json"
+	marketIndexMirror = "https://api.soulter.top/astrbot/plugins?format=json&mirror=1"
 )
 
 var marketIndexCache []MarketPlugin
@@ -67,45 +65,45 @@ func fetchRemoteMarket() []MarketPlugin {
 	}
 	// 2. 缓存失效/空 → 锁外抓取 (不阻塞其他请求), 双检避免重复抓取
 	marketIndexMu.Unlock()
-	type rawIndex struct {
-		Plugins []MarketPlugin `json:"plugins"`
-	}
 	var fetched []MarketPlugin
 	source := "all-failed"
-	// 直连 raw → api.github.com (base64) → 镜像, 任一成功; 加长超时
-	for _, u := range []string{marketIndexURL, marketIndexURLAPI, marketIndexMirror} {
+	// 从 AstrBot 官方商店拉取 (dict: id → plugin; 失败回退内置)
+	for _, u := range []string{marketIndexURL, marketIndexMirror} {
 		data, err := httpGetTimeout(u, 12000)
 		if err != nil {
 			continue
 		}
-		var idx rawIndex
-		if strings.Contains(u, "api.github.com") {
-			var apiResp struct {
-				Content string `json:"content"`
-			}
-			if err := json.Unmarshal(data, &apiResp); err != nil || apiResp.Content == "" {
-				continue
-			}
-			// GitHub Contents API 的 content 每 60 字符带 \n, 必须先去换行再解码
-			decoded, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
-				if r == '\n' || r == '\r' {
-					return -1
-				}
-				return r
-			}, apiResp.Content))
-			if err != nil {
-				continue
-			}
-			if err := json.Unmarshal(decoded, &idx); err == nil && len(idx.Plugins) > 0 {
-				fetched = idx.Plugins
-				source = "api.github.com"
-				break
-			}
+		// 商店返回: {"plugin-id": {display_name, desc, author, repo, tags, version, logo, ...}}
+		var storeMap map[string]json.RawMessage
+		if err := json.Unmarshal(data, &storeMap); err != nil || len(storeMap) == 0 {
 			continue
 		}
-		if err := json.Unmarshal(data, &idx); err == nil && len(idx.Plugins) > 0 {
-			fetched = idx.Plugins
-			source = u[:40]
+		for id, raw := range storeMap {
+			var p struct {
+				DisplayName string   `json:"display_name"`
+				Desc        string   `json:"desc"`
+				Author      string   `json:"author"`
+				Repo        string   `json:"repo"`
+				Tags        []string `json:"tags"`
+				Version     string   `json:"version"`
+				Logo        string   `json:"logo"`
+			}
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			m := MarketPlugin{
+				ID:      id,
+				Name:    p.DisplayName,
+				Repo:    p.Repo,
+				Desc:    p.Desc,
+				Author:  p.Author,
+				Version: p.Version,
+				Tags:    p.Tags,
+			}
+			fetched = append(fetched, m)
+		}
+		if len(fetched) > 0 {
+			source = "soulter-store"
 			break
 		}
 	}
@@ -139,7 +137,7 @@ func httpGetTimeout(url string, timeoutMs int) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	// 限制响应体大小 (防恶意大索引)
-	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 }
 
 // pluginsInstalled 判断某插件是否已安装 (有目录 + metadata)
@@ -190,7 +188,7 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 401, "未认证或会话已过期")
 			return
 		}
-		// 远程索引 + 内置, 按 repo 去重 (同一插件不同 id 只列一次)
+		// 远程商店 + 内置, 按 repo 去重 (同一插件不同 id 只列一次)
 		src := fetchRemoteMarket()
 		if len(src) == 0 {
 			src = builtinMarket
@@ -199,7 +197,7 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 		var merged []MarketPlugin
 		for _, p := range append(append([]MarketPlugin{}, src...), builtinMarket...) {
 			repoKey := strings.TrimSuffix(p.Repo, ".git")
-			if seenRepo[repoKey] {
+			if repoKey == "" || seenRepo[repoKey] {
 				continue
 			}
 			seenRepo[repoKey] = true
@@ -214,8 +212,21 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			}
 			list = append(list, np)
 		}
-		// 调试: 报告最近一个远程源错误
-		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote})
+		// 搜索过滤 (?q=名称/描述/作者; ?tag=标签)
+		if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+			ql := strings.ToLower(q)
+			filtered := list[:0]
+			for _, p := range list {
+				if strings.Contains(strings.ToLower(p.Name), ql) ||
+					strings.Contains(strings.ToLower(p.Desc), ql) ||
+					strings.Contains(strings.ToLower(p.Author), ql) ||
+					strings.Contains(strings.ToLower(p.ID), ql) {
+					filtered = append(filtered, p)
+				}
+			}
+			list = filtered
+		}
+		jsonOK(w, map[string]any{"ok": true, "plugins": list, "source": marketSourceNote, "total": len(list)})
 	})
 
 	// 安装 (clone + deps)
