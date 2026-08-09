@@ -21,15 +21,22 @@ import (
 
 // MarketPlugin 市场插件定义
 type MarketPlugin struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Repo        string   `json:"repo"`
-	Desc        string   `json:"desc"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author"`
-	Tags        []string `json:"tags"`
-	Installed   bool     `json:"installed"`
-	LocalVer    string   `json:"local_version"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Repo            string   `json:"repo"`
+	Desc            string   `json:"desc"`
+	Version         string   `json:"version"`
+	Author          string   `json:"author"`
+	Tags            []string `json:"tags"`
+	Installed       bool     `json:"installed"`
+	LocalVer        string   `json:"local_version"`
+	// AstrBot 商店增强字段 (对齐 AstrBot 市场页: 图标/Star/平台/更新时间/下载)
+	Logo            string   `json:"logo"`
+	Stars           int      `json:"stars"`
+	AstrbotVersion  string   `json:"astrbot_version"`
+	SupportPlatforms []string `json:"support_platforms"`
+	UpdatedAt       string   `json:"updated_at"`
+	DownloadURL     string   `json:"download_url"`
 }
 
 // 内置市场 (常用 AstrBot 插件; 后续可扩展为远程 index)
@@ -80,13 +87,18 @@ func fetchRemoteMarket() []MarketPlugin {
 		}
 		for id, raw := range storeMap {
 			var p struct {
-				DisplayName string   `json:"display_name"`
-				Desc        string   `json:"desc"`
-				Author      string   `json:"author"`
-				Repo        string   `json:"repo"`
-				Tags        []string `json:"tags"`
-				Version     string   `json:"version"`
-				Logo        string   `json:"logo"`
+				DisplayName      string   `json:"display_name"`
+				Desc             string   `json:"desc"`
+				Author           string   `json:"author"`
+				Repo             string   `json:"repo"`
+				Tags             []string `json:"tags"`
+				Version          string   `json:"version"`
+				Logo             string   `json:"logo"`
+				Stars            int      `json:"stars"`
+				AstrbotVersion   string   `json:"astrbot_version"`
+				SupportPlatforms []string `json:"support_platforms"`
+				UpdatedAt        string   `json:"updated_at"`
+				DownloadURL      string   `json:"download_url"`
 			}
 			if err := json.Unmarshal(raw, &p); err != nil {
 				continue
@@ -96,13 +108,19 @@ func fetchRemoteMarket() []MarketPlugin {
 				name = id // 商店无 display_name 时 fallback 到 id
 			}
 			m := MarketPlugin{
-				ID:      id,
-				Name:    name,
-				Repo:    p.Repo,
-				Desc:    p.Desc,
-				Author:  p.Author,
-				Version: p.Version,
-				Tags:    p.Tags,
+				ID:              id,
+				Name:            name,
+				Repo:            p.Repo,
+				Desc:            p.Desc,
+				Author:          p.Author,
+				Version:         p.Version,
+				Tags:            p.Tags,
+				Logo:            p.Logo,
+				Stars:           p.Stars,
+				AstrbotVersion:  p.AstrbotVersion,
+				SupportPlatforms: p.SupportPlatforms,
+				UpdatedAt:       p.UpdatedAt,
+				DownloadURL:     p.DownloadURL,
 			}
 			fetched = append(fetched, m)
 		}
