@@ -35,9 +35,9 @@ type MarketPlugin struct {
 // 内置市场 (常用 AstrBot 插件; 后续可扩展为远程 index)
 var builtinMarket = []MarketPlugin{
 	{ID: "astrbot_plugin_qq_group_daily_analysis", Name: "群分析总结", Repo: "https://github.com/sxp-Simon/astrbot_plugin_qq_group_daily_analysis.git", Desc: "群聊日常分析总结, 生成精美群聊分析报告", Author: "SXP-Simon", Tags: []string{"分析", "统计"}},
-	{ID: "astrbot_plugin_gitee_aiimg", Name: "Gitee AI 绘图", Repo: "https://github.com/mlzhudas/astrbot_plugin_gitee_aiimg.git", Desc: "AI 文生图/改图, 多服务商", Author: "木有知", Tags: []string{"绘图", "AI"}},
 	{ID: "astrbot_plugin_self_learning", Name: "自主学习", Repo: "https://github.com/NickCharlie/astrbot_plugin_self_learning.git", Desc: "对话风格学习, 群组黑话, 人格演化", Author: "NickMo", Tags: []string{"学习", "人格"}},
-	{ID: "meme_manager", Name: "表情包管理器", Repo: "https://github.com/anka-afk/astrbot_plugin_meme_manager.git", Desc: "表情包管理与自动发送", Author: "anka", Tags: []string{"表情", "趣味"}},
+	{ID: "astrbot_plugin_essential", Name: "Essential 多功能", Repo: "https://github.com/Soulter/astrbot_plugin_essential.git", Desc: "随机动漫图/以图搜番/一言/今天吃什么/早晚安", Author: "Soulter", Tags: []string{"多功能"}},
+	{ID: "astrbot_plugin_rss", Name: "RSS 订阅", Repo: "https://github.com/Soulter/astrbot_plugin_rss.git", Desc: "群聊/私聊 RSS 订阅推送", Author: "Soulter", Tags: []string{"订阅"}},
 }
 
 // marketState 安装状态 (并发安全)

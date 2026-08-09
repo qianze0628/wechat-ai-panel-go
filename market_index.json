@@ -4,104 +4,76 @@
       "id": "astrbot_plugin_qq_group_daily_analysis",
       "name": "群分析总结",
       "repo": "https://github.com/sxp-Simon/astrbot_plugin_qq_group_daily_analysis.git",
-      "desc": "群聊日常分析总结, 生成精美群聊分析报告, 话题/用户形象/群聊圣经",
+      "desc": "群聊日常分析总结, 精美群聊分析报告",
       "author": "SXP-Simon",
       "tags": [
-        "分析",
-        "统计"
-      ]
-    },
-    {
-      "id": "astrbot_plugin_gitee_aiimg",
-      "name": "Gitee AI 绘图",
-      "repo": "https://github.com/mlzhudas/astrbot_plugin_gitee_aiimg.git",
-      "desc": "AI 文生图/改图, 多服务商, 批量后台生成",
-      "author": "木有知",
-      "tags": [
-        "绘图",
-        "AI"
+        "分析"
       ]
     },
     {
       "id": "astrbot_plugin_self_learning",
       "name": "自主学习",
       "repo": "https://github.com/NickCharlie/astrbot_plugin_self_learning.git",
-      "desc": "对话风格学习, 群组黑话, 社交关系与好感度, 人格演化",
+      "desc": "对话风格学习/人格演化",
       "author": "NickMo",
       "tags": [
-        "学习",
-        "人格"
+        "学习"
       ]
     },
     {
       "id": "astrbot_plugin_meme_manager",
       "name": "表情包管理器",
       "repo": "https://github.com/anka-afk/astrbot_plugin_meme_manager.git",
-      "desc": "表情包管理与自动发送, WebUI 管理页与资源广场",
+      "desc": "表情包管理与自动发送",
       "author": "anka",
       "tags": [
-        "表情",
-        "趣味"
+        "表情"
       ]
     },
     {
-      "id": "astrbot_plugin_wechat_gpt_bot",
-      "name": "微信 GPT 助手",
-      "repo": "https://github.com/qianze0628/astrbot_plugin_wechat_gpt_bot.git",
-      "desc": "微信场景增强: 群聊记录学习/消息总结/自动回复优化",
-      "author": "qianze0628",
-      "tags": [
-        "微信",
-        "增强"
-      ]
-    },
-    {
-      "id": "astrbot_plugin_daily_report",
-      "name": "每日简报",
-      "repo": "https://github.com/qianze0628/astrbot_plugin_daily_report.git",
-      "desc": "定时生成每日简报 (新闻/天气/群聊统计) 发送到群",
-      "author": "qianze0628",
-      "tags": [
-        "定时",
-        "简报"
-      ]
-    },
-    {
-      "id": "astrbot_plugin_nonebot_forward",
-      "name": "消息转发",
-      "repo": "https://github.com/Soulter/AstrBot_Plugin_MessageForward.git",
-      "desc": "跨平台消息转发 (微信↔QQ 等)",
+      "id": "astrbot_plugin_essential",
+      "name": "Essential 多功能",
+      "repo": "https://github.com/Soulter/astrbot_plugin_essential.git",
+      "desc": "随机动漫图/以图搜番/MC服务器/一言/今天吃什么/早晚安/EPIC",
       "author": "Soulter",
       "tags": [
-        "转发"
+        "多功能"
       ]
     },
     {
-      "id": "astrbot_plugin_txthy",
-      "name": "腾讯 AI (混元)",
-      "repo": "https://github.com/Soulter/AstrBot_Plugin_TXTHY.git",
-      "desc": "腾讯混元大模型接入",
+      "id": "astrbot_plugin_rss",
+      "name": "RSS 订阅",
+      "repo": "https://github.com/Soulter/astrbot_plugin_rss.git",
+      "desc": "群聊/私聊 RSS 订阅推送",
       "author": "Soulter",
       "tags": [
-        "AI",
-        "模型"
+        "订阅"
       ]
     },
     {
-      "id": "astrbot_plugin_gemini",
-      "name": "Gemini",
-      "repo": "https://github.com/Soulter/AstrBot_Plugins_Gemini.git",
-      "desc": "Google Gemini 多模态接入",
+      "id": "astrbot_plugin_leetcode",
+      "name": "LeetCode",
+      "repo": "https://github.com/Soulter/astrbot_plugin_leetcode.git",
+      "desc": "LeetCode 刷题助手",
       "author": "Soulter",
       "tags": [
-        "AI",
-        "模型"
+        "学习"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_fund",
+      "name": "基金助手",
+      "repo": "https://github.com/Soulter/astrbot_plugin_fund.git",
+      "desc": "基金监控/持仓管理",
+      "author": "Soulter",
+      "tags": [
+        "财经"
       ]
     },
     {
       "id": "astrbot_plugin_bilibili",
       "name": "B站动态",
-      "repo": "https://github.com/Soulter/AstrBot_Plugins_Bili.git",
+      "repo": "https://github.com/Soulter/astrbot_plugin_bilibili.git",
       "desc": "B站动态订阅推送",
       "author": "Soulter",
       "tags": [
@@ -109,23 +81,83 @@
       ]
     },
     {
-      "id": "AstrBot_Plugins_chatgpt",
-      "name": "ChatGPT 工具",
-      "repo": "https://github.com/Soulter/AstrBot_Plugins_ChatGPT.git",
-      "desc": "ChatGPT 官方接口增强",
+      "id": "astrbot_plugin_wake_enhance",
+      "name": "唤醒增强",
+      "repo": "https://github.com/Soulter/astrbot_plugin_wake_enhance.git",
+      "desc": "正则匹配唤醒/持续对话",
       "author": "Soulter",
       "tags": [
-        "AI"
+        "增强"
       ]
     },
     {
-      "id": "astrbot_plugin_ai_school",
-      "name": "AI 学习助手",
-      "repo": "https://github.com/Soulter/AstrBot_Plugins_School.git",
-      "desc": "学习辅助/题目解析",
+      "id": "astrbot_plugin_english",
+      "name": "英语学习",
+      "repo": "https://github.com/Soulter/astrbot_plugin_english.git",
+      "desc": "AstrBot 英语学习实验插件",
       "author": "Soulter",
       "tags": [
         "学习"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_knowledge_base",
+      "name": "知识库插件",
+      "repo": "https://github.com/Soulter/astrbot_plugin_knowledge_base.git",
+      "desc": "AstrBot 知识库接入",
+      "author": "Soulter",
+      "tags": [
+        "知识库"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_uptime",
+      "name": "站点监控",
+      "repo": "https://github.com/Soulter/astrbot_plugin_uptime.git",
+      "desc": "站点异常自动告警",
+      "author": "Soulter",
+      "tags": [
+        "监控"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_wecom",
+      "name": "企业微信",
+      "repo": "https://github.com/Soulter/astrbot_plugin_wecom.git",
+      "desc": "接入企业微信平台",
+      "author": "Soulter",
+      "tags": [
+        "平台"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_telegram",
+      "name": "Telegram",
+      "repo": "https://github.com/Soulter/astrbot_plugin_telegram.git",
+      "desc": "接入 Telegram 平台",
+      "author": "Soulter",
+      "tags": [
+        "平台"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_github_cards",
+      "name": "GitHub 卡片",
+      "repo": "https://github.com/Soulter/astrbot_plugin_github_cards.git",
+      "desc": "群聊 GitHub 链接自动发卡片",
+      "author": "Soulter",
+      "tags": [
+        "工具"
+      ]
+    },
+    {
+      "id": "astrbot_plugin_r1_filter",
+      "name": "R1 思维链过滤",
+      "repo": "https://github.com/Soulter/astrbot_plugin_r1_filter.git",
+      "desc": "过滤推理模型思维链",
+      "author": "Soulter",
+      "tags": [
+        "工具"
       ]
     }
   ]
