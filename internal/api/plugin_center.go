@@ -387,7 +387,9 @@ func (h *Handler) RegisterCmdConfig(cfg *config.Config) {
 			}
 			tmpPath := tmp.Name()
 			_ = tmp.Close()
-			if err := os.WriteFile(tmpPath, pretty.Bytes(), 0o644); err != nil {
+			// 写 UTF-8 BOM (记事本安全; AstrBot utf-8-sig 兼容)
+			withBOM := append([]byte{0xEF, 0xBB, 0xBF}, pretty.Bytes()...)
+			if err := os.WriteFile(tmpPath, withBOM, 0o644); err != nil {
 				jsonErr(w, 500, "写入失败: "+err.Error())
 				return
 			}

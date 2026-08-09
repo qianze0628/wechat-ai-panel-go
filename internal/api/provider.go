@@ -74,22 +74,27 @@ func (h *Handler) RegisterProvider(cfg *config.Config) {
 				}
 				return out, nil
 			}
-			// 全量组: provider + provider_sources (空数组也接受=清空)
-			if body.Providers != nil {
+			// 全量组: provider + provider_sources; 空数组不覆盖旧值 (防前端丢全量事故)
+			if len(body.Providers) > 0 {
 				provArr, err := parseArr(body.Providers, "providers")
 				if err != nil {
 					jsonErr(w, 400, err.Error())
 					return
 				}
 				m["provider"] = provArr
+			} else if body.Providers != nil && len(body.Providers) == 0 {
+				// 显式空数组 → 保留旧值 (不写)
+				// (如需清空请走配置文件页)
 			}
-			if body.Sources != nil {
+			if len(body.Sources) > 0 {
 				srcArr, err := parseArr(body.Sources, "provider_sources")
 				if err != nil {
 					jsonErr(w, 400, err.Error())
 					return
 				}
 				m["provider_sources"] = srcArr
+			} else if body.Sources != nil && len(body.Sources) == 0 {
+				// 同上保留
 			}
 			if body.Settings != nil {
 				m["provider_settings"] = body.Settings
@@ -121,13 +126,15 @@ func writeJSONAtomicBackup(cfgPath, dataDir string, obj map[string]any) error {
 	if err != nil {
 		return err
 	}
+	// 写 UTF-8 BOM (记事本可安全编辑; AstrBot 用 utf-8-sig 读取兼容)
+	withBOM := append([]byte{0xEF, 0xBB, 0xBF}, raw...)
 	tmp, err := os.CreateTemp(filepath.Dir(cfgPath), ".cmd-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
-	if err := os.WriteFile(tmpPath, raw, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, withBOM, 0o644); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
