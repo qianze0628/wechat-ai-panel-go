@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"wechat-ai-panel/internal/config"
 )
@@ -160,6 +161,14 @@ func (s *Services) startAstrbot() (bool, string) {
 	exe := findAstrbotExe()
 	if exe == "" {
 		return false, "astrbot 未安装, 请先安装"
+	}
+	// 预检: cmd_config.json 若是非 UTF-8 (GBK/ANSI), AstrBot 启动必崩 → 明确失败而非转圈
+	if cfgPath := s.Cfg.Astrbot.CmdConfig; cfgPath != "" {
+		if raw, err := os.ReadFile(cfgPath); err == nil {
+			if !utf8.Valid(raw) {
+				return false, "cmd_config.json 编码异常 (非 UTF-8), AstrBot 无法启动。请用面板'配置文件'页另存为 UTF-8, 或联系我们修复"
+			}
+		}
 	}
 	cmd, err := s.spawnService("astrbot", []string{exe, "run"}, s.Cfg.AstrbotRoot,
 		s.Cfg.Logs.AstrbotStdout, s.Cfg.Logs.AstrbotStderr)

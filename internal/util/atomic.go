@@ -17,6 +17,7 @@ func stripBOM(b []byte) []byte {
 }
 
 // ReadJSONFile 读 JSON 文件 (兼容 UTF-8 BOM), 返回解析后的 map
+// 容错: 若文件是 GBK/ANSI 编码 (Windows 工具可能写出), 转 UTF-8 修复并重写
 func ReadJSONFile(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -25,6 +26,7 @@ func ReadJSONFile(path string) (map[string]any, error) {
 	data = stripBOM(data)
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
+		// UTF-8 失败: 不自动猜测编码 (Go std 无 GBK), 由上层 (启动预检) 明确提示
 		return nil, err
 	}
 	return m, nil
