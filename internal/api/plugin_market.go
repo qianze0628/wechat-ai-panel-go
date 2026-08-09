@@ -352,17 +352,22 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 		}
 		_ = out
 	}
-	// requirements.txt 依赖 (循环装; AstrBot 用 uv 装, 这里用 pip)
+	// requirements.txt 依赖安装: 用 astrbot 相同 Python 环境 (uv 装的)
 	req := filepath.Join(pdir, "requirements.txt")
 	if _, err := os.Stat(req); err == nil {
-		pip := "pip"
-		args := []string{"install", "-r", req}
-		// uv 优先 (若可用)
-		if which2("uv") != "" {
-			pip = "uv"
-			args = []string{"pip", "install", "-r", req}
+		var cmd *exec.Cmd
+		// 优先: uv --python 指向 astrbot 环境
+		if uvPath := which2("uv"); uvPath != "" {
+			if py := astrbotPythonPath(); py != "" {
+				cmd = exec.Command(uvPath, "pip", "install", "--python", py, "-r", req)
+			} else {
+				cmd = exec.Command(uvPath, "pip", "install", "-r", req)
+			}
+		} else if py := which2("python"); py != "" {
+			cmd = exec.Command(py, "-m", "pip", "install", "-r", req)
+		} else {
+			return fmt.Errorf("依赖安装失败: 未找到 uv 或 python")
 		}
-		cmd := exec.Command(pip, args...)
 		// uv 吃 UV_INDEX_URL, pip 吃 PIP_INDEX_URL — 两种都注入保证镜像生效
 		cmd.Env = append(os.Environ(),
 			"UV_INDEX_URL="+cfg.Mirrors.PypiIndex,
@@ -373,4 +378,19 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 		}
 	}
 	return nil
+}
+
+// astrbotPythonPath 定位 astrbot 工具环境内的 python (Windows: uv tools/astrbot/Scripts/python.exe)
+func astrbotPythonPath() string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, `AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`),
+		filepath.Join(home, `.local\share\uv\tools\astrbot\bin\python`),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return ""
 }
