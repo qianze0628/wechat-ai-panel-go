@@ -387,7 +387,8 @@ func envInstallLabel(platform, name string) string {
 	case "node":
 		switch platform {
 		case "windows":
-			return "安装 Node.js: winget install OpenJS.NodeJS.LTS (或到 nodejs.org 下载)"
+			// 修复 (2026-08-10): 便携版自动下载, 不依赖 winget 商店
+			return "安装 Node.js: 自动下载便携版 (npmmirror 镜像)"
 		case "mac":
 			return "安装 Node.js: brew install node"
 		default:
