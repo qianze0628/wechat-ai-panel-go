@@ -524,6 +524,11 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		case err := <-done:
 			runErr = err
 		case <-time.After(timeout):
+			// 修复 (2026-08-10): 只 Kill 主进程会残留孙进程 (npm install 的 husky/child),
+			// Windows 用 taskkill /T /F 杀整棵树
+			if runtime.GOOS == "windows" {
+				_ = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+			}
 			cmd.Process.Kill()
 			runErr = fmt.Errorf("执行超时 (已强制结束)")
 		}
