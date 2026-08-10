@@ -78,7 +78,17 @@ func findAstrbotExePath() string {
 // 面板进程 PATH 是启动快照, 安装后新目录不在 PATH → LookPath 找不到 → "安装后仍不可用"
 func which2(name string) string {
 	if p, err := exec.LookPath(name); err == nil {
-		return p
+		// 修复 (2026-08-10): WindowsApps 商店别名 stub 会命中 LookPath 但不可用 (0 字节 reparse),
+		// 误判为"已装 Python"。对 python 校验文件大小, stub 跳过继续找真 Python。
+		if name == "python" {
+			if fi, serr := os.Stat(p); serr != nil || fi.IsDir() || (fi.Size() > 0 && fi.Size() < 1024) {
+				// stub 或无效 → 继续查找
+			} else {
+				return p
+			}
+		} else {
+			return p
+		}
 	}
 	home, _ := os.UserHomeDir()
 	ext := ""
@@ -86,11 +96,30 @@ func which2(name string) string {
 		ext = ".exe"
 	}
 	candidates := []string{}
+	// 用户级安装目录
 	for _, sub := range []string{".local\\bin", "AppData\\Roaming\\uv\\bin", "AppData\\Roaming\\uv"} {
 		candidates = append(candidates, filepath.Join(home, sub, name+ext))
 	}
+	// 标准系统安装目录 (winget/nvm 装的 node; Git for Windows; Python)
+	// 修复 (2026-08-10): 之前缺这些 → 全新电脑 winget 装 node/git 后 which2 找不到
+	sysDirs := []string{
+		`C:\Program Files\nodejs`,
+		`C:\Program Files\Git\cmd`,
+		`C:\Program Files\Python312`,
+		`C:\Program Files\Python313`,
+		`C:\Python312`,
+		`C:\Python313`,
+	}
+	for _, d := range sysDirs {
+		candidates = append(candidates, filepath.Join(d, name+ext))
+	}
 	for _, c := range candidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			// 修复 (2026-08-10): WindowsApps 商店别名 stub (python.exe 0 字节 reparse) 会骗过 LookPath。
+			// 对 python 额外校验文件大小 > 1KB (真 Python > 100KB), stub 只有 0 字节。
+			if name == "python" && fi.Size() > 0 && fi.Size() < 1024 {
+				continue // 商店别名 stub, 跳过
+			}
 			return c
 		}
 	}

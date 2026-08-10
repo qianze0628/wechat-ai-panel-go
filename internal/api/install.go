@@ -16,7 +16,67 @@ import (
 	"time"
 
 	"wechat-ai-panel/internal/config"
+
+	"golang.org/x/sys/windows/registry"
 )
+
+// refreshSystemPath 从注册表重读系统/用户 PATH, 返回合并后的 PATH 字符串。
+// 修复 (2026-08-10): Go 进程 os.Environ() 是启动快照, winget/安装器修改注册表 PATH 后
+// 当前进程不感知 → exec 找不到新装工具 (如 winget 装的 node/npm)。
+// 每次运行命令前调用, 把注册表最新 PATH 注入子进程 env。
+func refreshSystemPath() string {
+	var paths []string
+	// 系统 PATH (HKLM)
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, registry.QUERY_VALUE); err == nil {
+		if v, _, err := k.GetStringValue("Path"); err == nil {
+			paths = append(paths, v)
+		}
+		k.Close()
+	}
+	// 用户 PATH (HKCU)
+	if k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE); err == nil {
+		if v, _, err := k.GetStringValue("Path"); err == nil {
+			paths = append(paths, v)
+		}
+		k.Close()
+	}
+	merged := strings.Join(paths, string(os.PathListSeparator))
+	if merged != "" {
+		// 保留当前进程 PATH 中注册表未覆盖的项 (如面板自带便携工具目录)
+		merged += string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	return merged
+}
+
+// buildCmdEnv 构造子进程 env: 注册表最新 PATH + 额外目录 + 镜像变量。
+// 修复 (2026-08-10): 之前用 os.Environ() 快照 → winget 装 node 后 npm 阶段找不到 node。
+func buildCmdEnv(extraPaths []string) []string {
+	sysPath := refreshSystemPath()
+	// extraPaths 是"安装目录列表" (如 %USERPROFILE%\.local\bin), 作为 PATH 前缀
+	// 修复: 逆序遍历保持传入顺序 (否则后追加的排最前)
+	for i := len(extraPaths) - 1; i >= 0; i-- {
+		p := extraPaths[i]
+		if p != "" && !strings.Contains(sysPath, p) {
+			sysPath = p + string(os.PathListSeparator) + sysPath
+		}
+	}
+	env := []string{}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PATH=") {
+			continue // 丢弃快照 PATH, 用刷新后的
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PATH="+sysPath)
+	env = append(env, "PYTHONIOENCODING=utf-8")
+	if mirrorPypiIndex != "" {
+		env = append(env, "UV_INDEX_URL="+mirrorPypiIndex, "PIP_INDEX_URL="+mirrorPypiIndex)
+	}
+	// 修复 (2026-08-10): uv 首次安装工具需要下载 CPython runtime (github.com/astral-sh/python-build-standalone),
+	// 国内直连超时 → 设置 UV_PYTHON_INSTALL_MIRROR 走 gh-proxy 镜像 (与 uv 二进制下载同源)
+	env = append(env, "UV_PYTHON_INSTALL_MIRROR=https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone")
+	return env
+}
 
 // StageState 单个安装阶段的状态 (结构化进度, 供前端阶段卡片展示)
 type StageState struct {
@@ -123,6 +183,15 @@ func planInstallTasks(platform, wechatDir, astrbotRoot, wechatRepo string) []map
 			"kind":  "env_python", "target": "",
 		})
 	}
+	// git: 全新电脑常无 git → clone 阶段必失败。Windows 装便携 git (面板管理 PATH);
+	// 其他平台提示系统包管理器安装。
+	// 修复 (2026-08-10): 之前完全没检查 git。
+	if which2("git") == "" {
+		tasks = append(tasks, map[string]string{
+			"label": envInstallLabel(platform, "git"),
+			"kind":  "env_git", "target": "",
+		})
+	}
 
 	// ---- 阶段 2: wechat-bot 源码 + 依赖 ----
 	pkg := filepath.Join(wechatDir, "package.json")
@@ -162,9 +231,11 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 	case "node":
 		switch platform {
 		case "windows":
-			// winget 是 Win10/11 自带; 失败会进入日志, 用户可手动到 nodejs.org 下载
-			// 改走 cmd 包一层 chcp 65001 (UTF-8) 防日志乱码
-			return exec.Command("cmd", "/c", "chcp 65001>nul && winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent")
+			// 修复 (2026-08-10): 之前用 winget install OpenJS.NodeJS.LTS — 依赖微软商店/网络,
+			// 全新电脑无商店应用/网络差时必失败; 且装到 Program Files 当前进程 PATH 快照找不到。
+			// 改为: 直接下载 Node.js 便携版 zip (官方/淘宝镜像), 解压到面板 runtime/nodejs,
+			// 由面板自己管理 PATH (每次 runCmd 前注入), 完全不依赖商店与系统 PATH。
+			return exec.Command("powershell", "-NoProfile", "-Command", buildNodePortableCmd())
 		case "mac":
 			return exec.Command("brew", "install", "node")
 		default: // linux
@@ -181,24 +252,27 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 				arch = "aarch64-pc-windows-msvc"
 			}
 			uvVer := "0.6.14" // 稳定版本 (更新时同步改)
+			// 修复 (2026-08-10): 增加国内可达源: astral.sh 官方 (大陆可直连) + npmmirror 镜像 + gh-proxy
+			urlAstral := "https://astral.sh/uv/" + uvVer + "/uv-" + arch + ".zip"
 			urlMirror := "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
+			urlNpmmirror := "https://npmmirror.com/mirrors/uv/uv-" + arch + ".zip"
 			urlDirect := "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
 			// 镜像配置里的 git clone proxy 也可用作文件下载加速前缀
 			urlGhfast := ""
 			if mirrorGitCloneProxy != "" {
 				urlGhfast = mirrorGitCloneProxy + "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
 			}
-			// 用 PowerShell 依次尝试 (镜像→ghfast→直连), 解压 zip 到 %USERPROFILE%\.local\bin
+			// 用 PowerShell 依次尝试 (astral官方→npmmirror→ghfast→gh-proxy→直连), 解压 zip 到 %USERPROFILE%\.local\bin
 			// 修复: 全英文输出避免 GBK 乱码; 目标 uv.exe 共存时先改名旧的再复制; 最后必须 Test-Path 成功才 exit 0
 			ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " +
 				"$target = Join-Path $env:USERPROFILE '.local\\bin'; " +
 				"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
 				"$zip = Join-Path $env:TEMP 'uv-installer.zip'; " +
-				"$urls = @('" + urlMirror + "'); " +
+				"$urls = @('" + urlAstral + "', '" + urlNpmmirror + "'); " +
 				"if ('" + urlGhfast + "' -ne '') { $urls = @('" + urlGhfast + "') + $urls }; " +
-				"$urls = $urls + @('" + urlDirect + "'); " +
+				"$urls = $urls + @('" + urlMirror + "', '" + urlDirect + "'); " +
 				"$ok = $false; " +
-				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 90; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
+				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 45; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
 				"if (-not $ok) { Write-Error 'uv download failed from all sources. Manual install: https://github.com/astral-sh/uv/releases'; exit 1 }; " +
 				"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
 				"$tmp = Join-Path $env:TEMP ('uv' + [guid]::NewGuid().ToString('N')); " +
@@ -209,6 +283,9 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 				"Copy-Item -Path (Join-Path $tmp 'uvx.exe') -Destination $target -Force -ErrorAction SilentlyContinue; " +
 				"Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; " +
 				"if (-not (Test-Path $probe)) { Write-Error 'uv.exe extract failed'; exit 1 }; " +
+				// 修复 (2026-08-10): 把 .local\bin 写入用户 PATH, 面板重启/用户终端都能用 uv
+				"$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); " +
+				"if ($userPath -notlike '*\\.local\\bin*') { [Environment]::SetEnvironmentVariable('Path', $userPath + ';' + $target, 'User') }; " +
 				"Write-Output 'uv install OK'; exit 0"
 			return exec.Command("powershell", "-NoProfile", "-Command", ps)
 		}
@@ -227,8 +304,81 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 		default:
 			return exec.Command("bash", "-c", "sudo apt-get install -y python3 python3-pip")
 		}
+	case "git":
+		if platform == "windows" {
+			// 便携 MinGit (面板管理 PATH), 不依赖系统安装
+			return exec.Command("powershell", "-NoProfile", "-Command", gitPortableCmd())
+		}
+		return exec.Command("bash", "-c", "sudo apt-get install -y git || brew install git")
 	}
 	return nil
+}
+
+// nodePortableDir 面板自管理 Node.js 便携目录 (随面板分发, 不依赖系统 PATH)
+func nodePortableDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".wechat-ai-panel", "nodejs")
+}
+
+// buildNodePortableCmd 构造 PowerShell 命令: 下载 Node.js LTS 便携版 zip 并解压到面板目录。
+// 源: 淘宝镜像 (npmmirror, 国内快) 优先, 官方 nodejs.org 兜底。
+// 修复 (2026-08-10): 不依赖 winget/商店; 面板注入 PATH 使用。
+func buildNodePortableCmd() string {
+	nodeVer := "v22.14.0" // LTS (更新时同步改)
+	arch := "x64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	target := nodePortableDir()
+	zipName := "node-" + nodeVer + "-win-" + arch
+	urlMirror := "https://npmmirror.com/mirrors/node/" + nodeVer + "/" + zipName + ".zip"
+	urlDirect := "https://nodejs.org/dist/" + nodeVer + "/" + zipName + ".zip"
+	ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " +
+		"$target = '" + target + "'; " +
+		"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
+		"$zip = Join-Path $env:TEMP 'node-installer.zip'; " +
+		"$urls = @('" + urlMirror + "', '" + urlDirect + "'); " +
+		"$ok = $false; " +
+		"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 300; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 10000000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
+		"if (-not $ok) { Write-Error 'node download failed from all sources. Manual: https://nodejs.org'; exit 1 }; " +
+		"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+		"$tmp = Join-Path $env:TEMP ('node' + [guid]::NewGuid().ToString('N')); " +
+		"[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp); " +
+		"$src = Join-Path $tmp '" + zipName + "'; " +
+		"if (-not (Test-Path (Join-Path $src 'node.exe'))) { Write-Error 'node.exe not in zip'; exit 1 }; " +
+		"Get-ChildItem $src | Copy-Item -Destination $target -Recurse -Force; " +
+		"Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; " +
+		"if (-not (Test-Path (Join-Path $target 'node.exe'))) { Write-Error 'node extract failed'; exit 1 }; " +
+		"Write-Output 'node portable OK'; exit 0"
+	return ps
+}
+
+// gitPortableCmd 构造 PowerShell 命令: 下载 Git for Windows 便携版 (MinGit) 到面板目录。
+// 修复 (2026-08-10): 全新电脑无 git → clone 阶段必失败; 便携 git 由面板注入 PATH。
+func gitPortableCmd() string {
+	home, _ := os.UserHomeDir()
+	target := filepath.Join(home, ".wechat-ai-panel", "git")
+	zipName := "MinGit-2.47.1-64-bit"
+	// 修复 (2026-08-10): npmmirror 路径含版本子目录; gh-proxy 兜底
+	urlNpmmirror := "https://npmmirror.com/mirrors/git-for-windows/v2.47.1.windows.1/" + zipName + ".zip"
+	urlGhproxy := "https://gh-proxy.com/https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/" + zipName + ".zip"
+	urlDirect := "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/" + zipName + ".zip"
+	ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " +
+		"$target = '" + target + "'; " +
+		"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
+		"$zip = Join-Path $env:TEMP 'git-installer.zip'; " +
+		"$urls = @('" + urlNpmmirror + "', '" + urlGhproxy + "', '" + urlDirect + "'); " +
+		"$ok = $false; " +
+		"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 300; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 1000000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
+		"if (-not $ok) { Write-Error 'git download failed from all sources. Manual: https://git-scm.com/downloads'; exit 1 }; " +
+		"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+		"$tmp = Join-Path $env:TEMP ('git' + [guid]::NewGuid().ToString('N')); " +
+		"[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp); " +
+		"Get-ChildItem $tmp | Copy-Item -Destination $target -Recurse -Force; " +
+		"Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; " +
+		"if (-not (Test-Path (Join-Path $target 'cmd\\git.exe'))) { Write-Error 'git extract failed'; exit 1 }; " +
+		"Write-Output 'git portable OK'; exit 0"
+	return ps
 }
 
 // envInstallLabel 返回环境依赖的安装提示 (平台感知)
@@ -254,6 +404,11 @@ func envInstallLabel(platform, name string) string {
 		default:
 			return "安装 Python: sudo apt-get install -y python3 python3-pip"
 		}
+	case "git":
+		if platform == "windows" {
+			return "安装 git: 自动下载便携 MinGit (面板管理)"
+		}
+		return "安装 git: sudo apt-get install -y git"
 	}
 	return "安装 " + name
 }
@@ -343,13 +498,7 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		if cmd == nil {
 			return false, "命令为空"
 		}
-		env := append(os.Environ(), extraPaths...)
-		env = append(env, "PYTHONIOENCODING=utf-8")
-		// 国内镜像 env (uv/pip 用 UV_INDEX_URL; npm 用 registry 参数)
-		if mirrorPypiIndex != "" {
-			env = append(env, "UV_INDEX_URL="+mirrorPypiIndex, "PIP_INDEX_URL="+mirrorPypiIndex)
-		}
-		cmd.Env = env
+		cmd.Env = buildCmdEnv(extraPaths)
 		// stdout/stderr → 临时文件, 后台 goroutine 实时读进 Logs
 		tmpOut, err1 := os.CreateTemp("", "install-*.out")
 		tmpErr, err2 := os.CreateTemp("", "install-*.err")
@@ -392,23 +541,32 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	addLog("[env] 检测环境工具链 (node/npm/uv/python/git)...")
 	envOK := true
 	for _, t := range tasks {
-		if t["kind"] == "env_node" || t["kind"] == "env_uv" || t["kind"] == "env_python" {
+		if strings.HasPrefix(t["kind"], "env_") {
 			addLog("[env] [start] " + t["label"])
 			cmd := envInstallCmd(platform, strings.TrimPrefix(t["kind"], "env_"))
 			ok2, errMsg := runCmd(cmd, 300*time.Second)
 			if ok2 {
 				addLog("[env] [done] " + t["label"] + " exit=0")
-				// 安装目录加入 PATH (Windows: %USERPROFILE%\.local\bin; 标准 node 目录)
+				// 安装目录加入额外 PATH 前缀 (优先级最高; 与注册表 PATH 叠加)
 				home, _ := os.UserHomeDir()
 				extraPaths = append(extraPaths,
-					"PATH="+os.Getenv("PATH")+string(os.PathListSeparator)+filepath.Join(home, ".local", "bin"),
+					filepath.Join(home, ".local", "bin"),
+					nodePortableDir(),
+					filepath.Join(home, ".wechat-ai-panel", "git", "cmd"),
+					filepath.Join(home, ".wechat-ai-panel", "git", "mingw64", "bin"),
+					filepath.Join(home, ".wechat-ai-panel", "git", "usr", "bin"),
 				)
 			} else {
 				envOK = false
 				addLog("[env] [error] " + t["label"] + " FAILED: " + errMsg)
 				installState.mu.Lock()
 				installState.NeedManual = true
-				installState.ManualHint = toolManualHint(platform, strings.TrimPrefix(t["kind"], "env_"))
+				// 修复 (2026-08-10): 多工具失败时累加 hint, 避免后一个覆盖前一个
+				if installState.ManualHint == "" {
+					installState.ManualHint = toolManualHint(platform, strings.TrimPrefix(t["kind"], "env_"))
+				} else {
+					installState.ManualHint += "\n---\n" + toolManualHint(platform, strings.TrimPrefix(t["kind"], "env_"))
+				}
 				installState.mu.Unlock()
 			}
 		}
@@ -422,18 +580,24 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			return which2("uv") != ""
 		case "python":
 			return which2("python") != "" || which2("python3") != ""
+		case "git":
+			return which2("git") != ""
 		}
 		return true
 	}
 	for _, t := range tasks {
-		if t["kind"] == "env_node" || t["kind"] == "env_uv" || t["kind"] == "env_python" {
+		if strings.HasPrefix(t["kind"], "env_") {
 			nm := strings.TrimPrefix(t["kind"], "env_")
 			if !checkEnv(nm) {
 				envOK = false
 				addLog("[env] [error] " + nm + " 安装后检测仍不可用, 请手动安装")
 				installState.mu.Lock()
 				installState.NeedManual = true
-				installState.ManualHint = toolManualHint(platform, nm)
+				if installState.ManualHint == "" {
+					installState.ManualHint = toolManualHint(platform, nm)
+				} else {
+					installState.ManualHint += "\n---\n" + toolManualHint(platform, nm)
+				}
 				installState.mu.Unlock()
 			}
 		}
@@ -453,27 +617,44 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		addLog("[clone] [start] " + cloneTask["label"])
 		_ = os.MkdirAll(wechatDir, 0o755)
 		repo := cloneTask["repo"]
-		// 国内加速: 优先镜像代理 (ghproxy 类), 失败自动回退直连
+		// 国内加速: 多级镜像候选自动回退 (修复 2026-08-10: 之前默认镜像为空 → 国内直连 github 必失败)
+		// 候选顺序: 用户配置镜像 → 内置公共镜像列表 → 直连
 		cloneOK := false
 		var cloneErr string
+		repoClean := strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
+		proxyCandidates := []string{}
 		if mirrorGitCloneProxy != "" {
-			proxied := mirrorGitCloneProxy + strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
-			addLog("[clone] [info] 尝试镜像加速: " + proxied)
+			proxyCandidates = append(proxyCandidates, mirrorGitCloneProxy)
+		}
+		proxyCandidates = append(proxyCandidates,
+			"https://gh-proxy.com/",
+			"https://ghfast.top/",
+			"https://ghproxy.net/",
+			"https://mirror.ghproxy.com/",
+		)
+		for _, proxy := range proxyCandidates {
+			if cloneOK {
+				break
+			}
+			proxied := strings.TrimSuffix(proxy, "/") + "/" + repoClean
+			addLog("[clone] [info] 尝试镜像: " + proxied)
+			_ = os.RemoveAll(wechatDir)
+			_ = os.MkdirAll(wechatDir, 0o755)
 			cmd := exec.Command("git", "clone", "--depth", "1", proxied, wechatDir)
 			var ok2 bool
-			ok2, cloneErr = runCmd(cmd, 300*time.Second)
-			if !ok2 {
-				// 清半成品再试直连
-				_ = os.RemoveAll(wechatDir)
-				_ = os.MkdirAll(wechatDir, 0o755)
-				addLog("[clone] [warn] 镜像失败, 回退直连: " + cloneErr)
-			} else {
+			ok2, cloneErr = runCmd(cmd, 240*time.Second)
+			if ok2 {
 				cloneOK = true
+				cloneErr = ""
+			} else {
+				addLog("[clone] [warn] 镜像失败: " + cloneErr)
 			}
 		}
 		if !cloneOK {
+			_ = os.RemoveAll(wechatDir)
+			_ = os.MkdirAll(wechatDir, 0o755)
 			cmd := exec.Command("git", "clone", "--depth", "1", repo, wechatDir)
-			ok2, errMsg := runCmd(cmd, 600*time.Second)
+			ok2, errMsg := runCmd(cmd, 240*time.Second)
 			if ok2 {
 				cloneOK = true
 				cloneErr = ""
@@ -485,7 +666,23 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			stageDone("clone", "git clone 失败", cloneErr)
 			installState.mu.Lock()
 			installState.NeedManual = true
-			installState.ManualHint = "git clone 失败: " + cloneErr + "\n可手动执行: git clone --depth 1 " + repo + " " + wechatDir
+			installState.ManualHint = "git clone 失败: " + cloneErr +
+				"\n已尝试国内镜像 (gh-proxy/ghfast 等) 与直连均失败, 请检查网络或稍后重试。" +
+				"\n手动方案: ① 若未装 git, 到 https://git-scm.com/downloads 下载安装;" +
+				"\n② 用浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP," +
+				"解压后把文件夹重命名为 wechat-bot-windows 放到本程序目录下, 再点\"重新检测\""
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		// 修复 (2026-08-10): clone 成功后必须校验 package.json 存在, 否则半成品目录
+		// (超时被杀/网络中断留下 .git 无源码) 会让后续 npm 阶段静默跳过 → 安装"成功"但 bot 不可用
+		if !fileExists(filepath.Join(wechatDir, "package.json")) {
+			_ = os.RemoveAll(wechatDir)
+			stageDone("clone", "源码不完整 (无 package.json)", "clone 半成品, 已清理, 请重试")
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "源码拉取不完整 (可能网络中断)。已清理半成品目录, 请重新点击安装重试。"
 			installState.mu.Unlock()
 			finishInstall(false)
 			return
@@ -542,10 +739,12 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	stageDone("astrbot", "AstrBot 就绪", "")
 
 	// ===== 阶段 5: 验证 =====
+	// 修复 (2026-08-10): 之前用 exec.LookPath (面板进程 PATH 快照) → 装好的工具全找不到 → 误报失败。
+	// 改用 which2 (含已知目录回退) + findAstrbotExePath (uv tools 目录回退)。
 	setStage("verify", "验证", 0)
-	nodeV, _ := exec.LookPath("node")
-	uvPath, _ := exec.LookPath("uv")
-	astrbotPath, _ := exec.LookPath("astrbot")
+	nodeV := which2("node")
+	uvPath := which2("uv")
+	astrbotPath := findAstrbotExePath()
 	detail := "node=" + ternary(nodeV != "", "✓", "✗") +
 		" uv=" + ternary(uvPath != "", "✓", "✗") +
 		" astrbot=" + ternary(astrbotPath != "", "✓", "✗")
@@ -555,7 +754,7 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		ok = true
 	} else {
 		addLog("[verify] [error] " + detail)
-		stageDone("verify", detail, "部分组件验证未通过")
+		stageDone("verify", detail, "部分组件验证未通过 (若工具已安装, 重启面板后生效)")
 		ok = false
 	}
 
@@ -613,6 +812,11 @@ func toolManualHint(platform, name string) string {
 			return "Python 未安装。请到 https://www.python.org/downloads/ 下载 3.12+ (安装时勾选 'Add to PATH')"
 		}
 		return "Python 未安装。请执行: sudo apt-get install -y python3 python3-pip"
+	case "git":
+		if platform == "windows" {
+			return "git 安装失败 (下载源不可达)。请手动到 https://git-scm.com/downloads 下载安装 (默认选项即可), 完成后点\"重新检测\""
+		}
+		return "git 未安装。请执行: sudo apt-get install -y git"
 	}
 	return "请手动安装缺失组件后重试"
 }
