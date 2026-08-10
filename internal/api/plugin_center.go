@@ -45,6 +45,28 @@ func pluginsDir(cfg *config.Config) string {
 	return filepath.Join(cfg.AstrbotDataDir, "plugins")
 }
 
+// pluginConfigFile 解析插件配置文件的真实路径:
+// 优先插件目录 config.json (旧式); AstrBot 4.x 标准为数据目录 config/<name>_config.json
+// (self_learning/群分析等插件保存于后者, 只读前者会导致开关无值)
+func pluginConfigFile(cfg *config.Config, id, pdir string) string {
+	inDir := filepath.Join(pdir, "config.json")
+	if _, err := os.Stat(inDir); err == nil {
+		return inDir
+	}
+	// 数据目录 config/<id>_config.json (id 可能是 "astrbot_plugin_xxx" 或去除前缀)
+	cand := filepath.Join(cfg.AstrbotDataDir, "config", id+"_config.json")
+	if _, err := os.Stat(cand); err == nil {
+		return cand
+	}
+	short := strings.TrimPrefix(id, "astrbot_plugin_")
+	cand2 := filepath.Join(cfg.AstrbotDataDir, "config", short+"_config.json")
+	if _, err := os.Stat(cand2); err == nil {
+		return cand2
+	}
+	// 都不存在: 默认写插件目录 (与旧行为一致)
+	return inDir
+}
+
 // parseMetadataYaml 极简 metadata.yaml KV 解析 (缩进 2 空格结构)
 // 解析顶层字段 + support_platforms 列表
 func parseMetadataYaml(content string) map[string]any {
@@ -223,10 +245,13 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			// 读 config.json (不存在返回空对象)
+			// 读配置: 优先插件目录 config.json, 其次 AstrBot 数据目录 config/<name>_config.json
+			// (修复 2026-08-10: self_learning 等 AstrBot 4.x 插件配置在数据目录, 之前读不到 → 前端开关无值)
 			cfgVal := map[string]any{}
-			raw, err := os.ReadFile(filepath.Join(pdir, "config.json"))
-			if err == nil {
+			cfgFile := pluginConfigFile(cfg, id, pdir)
+			if raw, err := os.ReadFile(cfgFile); err == nil {
+				// AstrBot 写的配置带 UTF-8 BOM, 剥掉再解析 (修复: BOM 导致 json.Unmarshal 失败 → 开关无值)
+				raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 				_ = json.Unmarshal(raw, &cfgVal)
 			}
 			// 读 schema
@@ -238,7 +263,7 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 				rawS, _ := os.ReadFile(filepath.Join(pdir, "_conf_schema.yaml"))
 				_ = json.Unmarshal(rawS, &schema)
 			}
-			jsonOK(w, map[string]any{"ok": true, "config": cfgVal, "schema": schema})
+			jsonOK(w, map[string]any{"ok": true, "config": cfgVal, "schema": schema, "config_path": cfgFile})
 		case http.MethodPost:
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -246,25 +271,33 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 				return
 			}
 			val, _ := body["config"].(map[string]any)
-			// 深合并已有配置 (前端只传改动项, 未传的键保留 — 修复: 之前整体替换丢未传键)
+			// 写回配置的实际位置 (插件目录 config.json 或 数据目录 config/<name>_config.json)
+			cfgFile := pluginConfigFile(cfg, id, pdir)
+			// 递归深合并已有配置 (修复 2026-08-10: 之前只合并顶层键,
+			// 嵌套 section (如 Self_Learning_Basic) 整体替换 → 丢该 section 下未传的开关)
 			merged := map[string]any{}
-			if raw, err := os.ReadFile(filepath.Join(pdir, "config.json")); err == nil {
+			if raw, err := os.ReadFile(cfgFile); err == nil {
+				raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 				var old map[string]any
 				if json.Unmarshal(raw, &old) == nil && old != nil {
 					merged = old
 				}
 			}
-			for k, v := range val {
-				merged[k] = v
+			deepMergeMap(merged, val)
+			// 原子写 (先写临时再 rename); 数据目录下 config 目录需确保存在
+			if dir := filepath.Dir(cfgFile); dir != pdir {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					jsonErr(w, 500, "创建配置目录失败: "+err.Error())
+					return
+				}
 			}
-			// 写 config.json (原子: 先写临时再 rename)
 			raw, _ := json.MarshalIndent(merged, "", "  ")
-			tmp := filepath.Join(pdir, "config.json.tmp")
+			tmp := cfgFile + ".tmp"
 			if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 				jsonErr(w, 500, "写入失败: "+err.Error())
 				return
 			}
-			if err := os.Rename(tmp, filepath.Join(pdir, "config.json")); err != nil {
+			if err := os.Rename(tmp, cfgFile); err != nil {
 				jsonErr(w, 500, "替换失败: "+err.Error())
 				return
 			}
@@ -434,5 +467,17 @@ func cleanupOldBackups(dir string, keep int) {
 	sort.Strings(names) // 时间戳命名 → 字典序 = 时间序
 	for i := 0; i < len(names)-keep; i++ {
 		_ = os.Remove(filepath.Join(dir, names[i]))
+	}
+}
+// deepMergeMap 递归深合并: 目标 map 缺失的键补上, 嵌套 map 递归合并 (标量覆盖)
+func deepMergeMap(dst, src map[string]any) {
+	for k, sv := range src {
+		if sm, ok := sv.(map[string]any); ok {
+			if dm, ok2 := dst[k].(map[string]any); ok2 {
+				deepMergeMap(dm, sm)
+				continue
+			}
+		}
+		dst[k] = sv
 	}
 }
