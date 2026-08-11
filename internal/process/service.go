@@ -172,7 +172,21 @@ func (s *Services) startAstrbot() (bool, string) {
 			}
 		}
 	}
-	cmd, err := s.spawnService("astrbot", []string{exe, "run"}, s.Cfg.AstrbotRoot,
+	// 修复 (2026-08-11): astrbot_root 配置了不存在的盘符/目录时 (如 D:\.astrbot-root 但无 D 盘),
+	// Spawn 会先 mkdir, 失败时回退到 astrbot_data_dir (AstrBot 会把数据写到 cmd_config 同目录,
+	// dataDir 存在即可正常工作; root 仅作为工作目录)。
+	workDir := s.Cfg.AstrbotRoot
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		fallback := s.Cfg.AstrbotDataDir
+		if fallback == "" {
+			fallback = filepath.Dir(s.Cfg.Astrbot.CmdConfig)
+		}
+		if err2 := os.MkdirAll(fallback, 0o755); err2 == nil {
+			fmt.Printf("[process] astrbot_root 不可用 (%v), 回退工作目录到 %s\n", err, fallback)
+			workDir = fallback
+		}
+	}
+	cmd, err := s.spawnService("astrbot", []string{exe, "run"}, workDir,
 		s.Cfg.Logs.AstrbotStdout, s.Cfg.Logs.AstrbotStderr)
 	if err != nil {
 		return false, fmt.Sprintf("AstrBot 启动失败: %v", err)

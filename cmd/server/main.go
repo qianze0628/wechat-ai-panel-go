@@ -73,6 +73,10 @@ func main() {
 		_, wechatPkgErr := os.Stat(wechatPkg)
 		_, wechatNMErr := os.Stat(filepath.Join(cfg.WechatBotDir, "node_modules"))
 		_, cmdCfgErr := os.Stat(cfg.Astrbot.CmdConfig)
+		// 修复 (2026-08-11): astrbot_root 之前假 ok:true — 实际目录可能不存在 (如 D:\.astrbot-root 无 D 盘),
+		// 用户看到"有目录信息"但 AstrBot 启动失败。改为真实检测 (exists)。
+		_, rootExistsErr := os.Stat(cfg.AstrbotRoot)
+		_, dataDirErr := os.Stat(cfg.AstrbotDataDir)
 		envMap := map[string]any{
 			"node":   map[string]any{"installed": which("node") != "", "path": which("node")},
 			"npm":    map[string]any{"installed": which("npm") != "", "path": which("npm")},
@@ -83,8 +87,9 @@ func main() {
 				"installed": wechatPkgErr == nil, "deps_ready": wechatNMErr == nil,
 				"path": cfg.WechatBotDir,
 			},
-			"astrbot_root": map[string]any{"ok": true, "path": cfg.AstrbotRoot},
-			"cmd_config":   map[string]any{"exists": cmdCfgErr == nil, "path": cfg.Astrbot.CmdConfig},
+			"astrbot_root":    map[string]any{"exists": rootExistsErr == nil, "path": cfg.AstrbotRoot},
+			"astrbot_data_dir": map[string]any{"exists": dataDirErr == nil, "path": cfg.AstrbotDataDir},
+			"cmd_config":      map[string]any{"exists": cmdCfgErr == nil, "path": cfg.Astrbot.CmdConfig},
 		}
 		ce := cfg.ConfigErrors
 		if ce == nil {
@@ -161,7 +166,7 @@ func main() {
 	// 更新检测 (GitHub latest + IP 判断国内镜像)
 	srv.RegisterUpdate()
 	// 面板内置自动更新 (下载→替换→重启)
-	api.SetVersionTag("v0.5.3")
+	api.SetVersionTag("v0.5.4")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)

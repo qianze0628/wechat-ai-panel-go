@@ -199,6 +199,12 @@ func (h *Handler) RegisterAstrbot(cfg *config.Config) {
 				ExcludedGroupMembers map[string][]string `json:"excludedGroupMembers"`
 			}
 			json.NewDecoder(r.Body).Decode(&payload)
+			// 修复 (2026-08-11): 面板勾选保存只传裸 hashId → AstrBot 私聊 unified_msg_origin=
+			// "wechat-bridge:FriendMessage:<hashName>" 匹配不上 → 白名单拦截不回复 (王朝阳案例)。
+			// 后端归一化: 用 contacts/rooms 分辨联系人(私聊)与群聊, 补齐
+			// "wechat-bridge:FriendMessage:<hashName>" / "wechat-bridge:GroupMessage:<hashName>" 配套条目,
+			// 与微信内 /白名单添加 (whitelist_manager) 三连格式完全一致。
+			payload.ChatIDs = normalizeWhitelistIDs(ac, payload.ChatIDs)
 			out, err := ac.api("whitelist", "POST", payload)
 			if err != nil {
 				jsonOK(w, map[string]any{"ok": false, "message": err.Error()})
@@ -339,6 +345,79 @@ func toStringSlice(v any) []string {
 func toAnySlice(v any) []any {
 	arr, _ := v.([]any)
 	return arr
+}
+
+// normalizeWhitelistIDs 归一化面板保存的白名单 ID 列表:
+//   - 前端只传裸 hashId (勾选的联系人/群) → 用 contacts/rooms 分辨私聊/群聊,
+//     补齐 "wechat-bridge:FriendMessage:<hashName>" / "wechat-bridge:GroupMessage:<hashName>"
+//   - 已存在的 FriendMessage:/GroupMessage: 条目原样保留 (去重)
+//
+// 修复 (2026-08-11 王朝阳案例): AstrBot 私聊 unified_msg_origin 为
+// "wechat-bridge:FriendMessage:<hashName>", 只存裸 hashId 会被 WhitelistCheckStage 拦截 → 不回复。
+func normalizeWhitelistIDs(ac *AstrbotClient, chatIDs []string) []string {
+	if len(chatIDs) == 0 {
+		return chatIDs
+	}
+	// 从 wechat-bot 拉联系人/群列表, 建立 hashId → (名字, 是否群) 映射
+	contactHash := map[string]string{} // hashId → 名字
+	roomHash := map[string]string{}    // hashId → 群名
+	if cdata, err := ac.api("contacts", "GET", nil); err == nil {
+		for _, c := range toAnySlice(cdata["contacts"]) {
+			if cm, ok := c.(map[string]any); ok {
+				nm, _ := cm["name"].(string)
+				if nm == "" {
+					nm, _ = cm["rawName"].(string)
+				}
+				hid := fmt.Sprintf("%v", cm["hashId"])
+				if hid != "" && nm != "" {
+					contactHash[hid] = nm
+				}
+			}
+		}
+		for _, r := range toAnySlice(cdata["rooms"]) {
+			if rm, ok := r.(map[string]any); ok {
+				nm, _ := rm["name"].(string)
+				hid := fmt.Sprintf("%v", rm["hashId"])
+				if hid != "" && nm != "" {
+					roomHash[hid] = nm
+				}
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range chatIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+		// 裸 hashId 且已知名字 → 补齐 UMO 配套条目
+		if strings.Contains(id, ":") {
+			continue // 已是完整条目 (FriendMessage:/GroupMessage:), 保留
+		}
+		if nm, ok := contactHash[id]; ok {
+			h := fmt.Sprintf("%d", util.HashName(nm))
+			for _, x := range []string{h, "wechat-bridge:FriendMessage:" + h} {
+				if !seen[x] {
+					seen[x] = true
+					out = append(out, x)
+				}
+			}
+		} else if nm, ok := roomHash[id]; ok {
+			h := fmt.Sprintf("%d", util.HashName(nm))
+			x := "wechat-bridge:GroupMessage:" + h
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	return out
 }
 
 // AstrbotConfigured 检查 aiocqhttp 平台是否已配置且指向 ws_port (与 Python _astrbot_platform_ok 一致)

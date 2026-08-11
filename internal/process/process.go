@@ -4,6 +4,7 @@ package process
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -138,6 +139,14 @@ type SpawnOptions struct {
 func Spawn(opts SpawnOptions) (*exec.Cmd, error) {
 	if len(opts.Args) == 0 {
 		return nil, errors.New("args 不能为空")
+	}
+	// 修复 (2026-08-11): 工作目录不存在时 (如 astrbot_root 配置了 D:\.astrbot-root 但 D 盘
+	// 不存在/未创建), cmd.Start() 的 chdir 会报 "The system cannot find the path specified"。
+	// 先确保目录存在; 创建失败则明确报错 (而不是裸 chdir 错误)。
+	if opts.Dir != "" {
+		if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+			return nil, fmt.Errorf("工作目录创建失败 (%s): %v", opts.Dir, err)
+		}
 	}
 	cmd := exec.Command(opts.Args[0], opts.Args[1:]...)
 	cmd.Dir = opts.Dir
