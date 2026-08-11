@@ -603,7 +603,26 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			return
 		}
 		addLog("[clone] [start] " + cloneTask["label"])
-		_ = os.MkdirAll(wechatDir, 0o755)
+		// 修复 (2026-08-12): 配置的 wechat_dir 指向不存在的盘符 (D:\wechat-bot-windows 且无 D 盘) 时,
+		// MkdirAll 失败被忽略 → git clone 到空路径也失败 → 安装卡死。改: 创建失败即回退可靠目录。
+		if wechatDir != "" && fileExists(wechatDir) {
+			// 已存在的目录 (半成品/已有源码) 直接用
+		} else {
+			if err := os.MkdirAll(wechatDir, 0o755); err != nil {
+				home, _ := os.UserHomeDir()
+				fallback := filepath.Join(home, "wechat-bot-windows")
+				_ = os.MkdirAll(fallback, 0o755)
+				if fileExists(fallback) {
+					addLog(fmt.Sprintf("[clone] [warn] 目标目录 %s 创建失败 (%v), 回退到 %s", wechatDir, err, fallback))
+					wechatDir = fallback
+				} else {
+					addLog(fmt.Sprintf("[clone] [error] 目标目录 %s 创建失败且回退也不可用: %v", wechatDir, err))
+					stageDone("clone", "目录不可用", err.Error())
+					finishInstall(false)
+					return
+				}
+			}
+		}
 		repo := cloneTask["repo"]
 		// 国内加速: 多级镜像候选自动回退 (修复 2026-08-10: 之前默认镜像为空 → 国内直连 github 必失败)
 		// 候选顺序: 用户配置镜像 → 内置公共镜像列表 → 直连
@@ -732,11 +751,13 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	setStage("verify", "验证", 0)
 	nodeV := which2("node")
 	uvPath := which2("uv")
+	gitPath := which2("git")
 	astrbotPath := findAstrbotExePath()
 	detail := "node=" + ternary(nodeV != "", "✓", "✗") +
 		" uv=" + ternary(uvPath != "", "✓", "✗") +
+		" git=" + ternary(gitPath != "", "✓", "✗") +
 		" astrbot=" + ternary(astrbotPath != "", "✓", "✗")
-	if nodeV != "" && uvPath != "" && astrbotPath != "" {
+	if nodeV != "" && uvPath != "" && gitPath != "" && astrbotPath != "" {
 		addLog("[verify] [done] " + detail)
 		stageDone("verify", detail, "")
 		ok = true

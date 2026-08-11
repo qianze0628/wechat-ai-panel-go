@@ -176,15 +176,15 @@ func (s *Services) startAstrbot() (bool, string) {
 	// Spawn 会先 mkdir, 失败时回退到 astrbot_data_dir (AstrBot 会把数据写到 cmd_config 同目录,
 	// dataDir 存在即可正常工作; root 仅作为工作目录)。
 	workDir := s.Cfg.AstrbotRoot
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		fallback := s.Cfg.AstrbotDataDir
-		if fallback == "" {
-			fallback = filepath.Dir(s.Cfg.Astrbot.CmdConfig)
-		}
-		if err2 := os.MkdirAll(fallback, 0o755); err2 == nil {
-			fmt.Printf("[process] astrbot_root 不可用 (%v), 回退工作目录到 %s\n", err, fallback)
-			workDir = fallback
-		}
+	// 修复 (2026-08-12): 无 D 盘时 root/dataDir/cmd_config 目录全失败 → 最终兜底到
+	// %USERPROFILE%\.astrbot / TEMP (ensureWritableDir 链), 保证 AstrBot 必然能启动。
+	wd, wderr := ensureWritableDir(workDir)
+	if wderr != nil {
+		return false, fmt.Sprintf("AstrBot 启动失败: %v", wderr)
+	}
+	if wd != workDir {
+		fmt.Printf("[process] astrbot_root 不可用 (%s), 回退工作目录到 %s\n", s.Cfg.AstrbotRoot, wd)
+		workDir = wd
 	}
 	cmd, err := s.spawnService("astrbot", []string{exe, "run"}, workDir,
 		s.Cfg.Logs.AstrbotStdout, s.Cfg.Logs.AstrbotStderr)
@@ -314,6 +314,33 @@ func which(name string) string {
 		return ""
 	}
 	return p
+}
+
+// ensureWritableDir 确保目录存在且可写; 失败时自动回退到可靠目录并返回。
+// 修复 (2026-08-12): 全新电脑可能无 D 盘/配置指向不存在的盘符 (D:\.astrbot-root),
+// 此时 os.MkdirAll 失败 → 必须兜底到必然可写位置, 否则 AstrBot/wechat-bot 全链路死。
+// 回退顺序: ① 可靠用户目录 %USERPROFILE%\.wechat-ai-panel ② 系统 TEMP。
+func ensureWritableDir(dir string) (string, error) {
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			return dir, nil
+		}
+	}
+	// 兜底 1: 用户目录下的面板专用目录 (C 盘, 全新电脑必有)
+	home, _ := os.UserHomeDir()
+	for _, sub := range []string{".wechat-ai-panel", "AppData\\Local\\WeChatPanel", ".astrbot"} {
+		cand := filepath.Join(home, sub)
+		if err := os.MkdirAll(cand, 0o755); err == nil {
+			return cand, nil
+		}
+	}
+	// 兜底 2: 系统 TEMP
+	if tmp := os.Getenv("TEMP"); tmp != "" {
+		if err := os.MkdirAll(tmp, 0o755); err == nil {
+			return tmp, nil
+		}
+	}
+	return "", fmt.Errorf("无法创建任何工作目录 (原始: %s)", dir)
 }
 
 // HTTPOK 探测 HTTP 服务健康
