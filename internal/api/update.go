@@ -45,6 +45,7 @@ type DownloadInfo struct {
 	Region       string `json:"region"`
 	UseMirror    bool   `json:"use_mirror"`
 	MirrorPrefix string `json:"mirror_prefix"`
+	Asset        string `json:"asset"` // 后端算好的本平台资产名 (2026-08-11)
 	DirectURL    string `json:"direct_url"`
 	FinalURL     string `json:"final_url"`
 }
@@ -187,16 +188,33 @@ func (h *Handler) RegisterUpdate() {
 		})
 	})
 	h.mux.HandleFunc("/api/update/download-info", func(w http.ResponseWriter, r *http.Request) {
-		asset := r.URL.Query().Get("asset")
-		direct := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", GH, asset)
+		// 修复 (2026-08-11 agent 审查 P0-2): 不再依赖前端传 asset (可能取错平台/名字不匹配) →
+		// 后端按当前平台自算资产名 (assetForPlatform), 版本用 latest release tag。
+		// 之前用 /releases/latest/download/<asset> — asset 名不匹配 → 404。
+		asset := assetForPlatform()
+		if asset == "" {
+			jsonErr(w, 400, "不支持当前平台")
+			return
+		}
+		// 版本: 优先 latest release tag (前端已 check 过), 失败回退 latest/download
+		ver := r.URL.Query().Get("version")
+		var direct string
+		if ver != "" {
+			direct = fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", GH, ver, asset)
+		} else {
+			direct = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", GH, asset)
+		}
 		region := detectRegion()
 		info := DownloadInfo{
 			Region:    region,
+			Asset:     asset,
 			DirectURL: direct,
 			FinalURL:  direct,
 		}
-		if region == "CN" {
-			// 国内: 用 ghproxy 镜像前缀 (公共服务不稳定, 失败时前端自动回退直连)
+		// 国内或未知地区: 用 ghproxy 镜像前缀 (公共服务不稳定, 失败时前端自动回退直连)
+		// 修复 (2026-08-11 agent 审查 P1-6): unknown 也先走镜像 — 国内 GitHub 直连被墙,
+		// detectRegion 失败 (ipinfo 限流) 时之前直连 → 下载卡死
+		if region == "CN" || region == "unknown" {
 			info.UseMirror = true
 			info.MirrorPrefix = "https://gh-proxy.com/"
 			info.FinalURL = info.MirrorPrefix + direct

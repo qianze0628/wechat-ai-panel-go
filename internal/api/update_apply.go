@@ -255,27 +255,42 @@ func applyUpdate(version string) (string, error) {
 		return "", fmt.Errorf("解压失败: %v", err)
 	}
 
-	// 5. 替换当前 exe (先备份旧版)
+	// 5. 替换当前 exe (Windows 上运行中 exe 被锁定无法重命名 → 延迟脚本方案)
+	// 修复 (2026-08-11 agent 审查 P1-4): 之前 os.Rename(exe, backup) 在 Windows 必然失败
+	// (进程自身 exe 句柄锁定) → 更新永远失败。改为: 新 exe 放旁侧 → 写重启 bat
+	// (延迟 1s → copy /Y 替换 → 启动新 exe → 清理) → 启动 bat 后本进程退出。
 	exe, err := currentExe()
 	if err != nil {
 		return "", err
 	}
-	backup := exe + ".v"+ currentVersionShort() + ".bak"
-	_ = os.Rename(exe, backup) // 备份旧版
-	if err := os.Rename(binName, exe); err != nil {
-		// 替换失败回滚
-		_ = os.Rename(backup, exe)
-		return "", fmt.Errorf("替换失败: %v", err)
+	exeDir := filepath.Dir(exe)
+	// 新 exe 放 exe 同目录的临时名 (bat 需要从同盘复制; 避免 tmpDir 被 defer 删除)
+	newExe := filepath.Join(exeDir, ".wechat-ai-panel-new.exe")
+	if err := copyFile(binName, newExe); err != nil {
+		return "", fmt.Errorf("暂存新版本失败: %v", err)
 	}
-	updateApplyLog(fmt.Sprintf("已替换 %s (备份 %s)", exe, backup))
+	backup := exe + ".v" + currentVersionShort() + ".bak"
+	updateApplyLog(fmt.Sprintf("已下载新版本, 通过重启脚本替换 (备份 → %s)", backup))
 
-	// 6. 重启面板 (守护线程会拉起服务)
+	// 6. 写重启 bat (延迟替换 + 启动新 exe + 清理)
+	batPath := filepath.Join(exeDir, ".wechat-ai-panel-restart.bat")
+	bat := "@echo off\r\n" +
+		"ping 127.0.0.1 -n 2 >nul\r\n" + // 等待本进程完全退出
+		`if exist "` + backup + `" del /q "` + backup + `"` + "\r\n" +
+		`if exist "` + exe + `" ren "` + exe + `" "` + filepath.Base(backup) + `"` + "\r\n" +
+		`copy /Y "` + newExe + `" "` + exe + `"` + "\r\n" +
+		`del /q "` + newExe + `"` + "\r\n" +
+		`start "" "` + exe + `"` + "\r\n" +
+		`del /q "` + batPath + `"` + "\r\n"
+	if err := os.WriteFile(batPath, []byte(bat), 0o644); err != nil {
+		return "", fmt.Errorf("写重启脚本失败: %v", err)
+	}
+
+	// 7. 启动 bat 后本进程退出 (bat 会在 1s 后替换并重启面板)
 	updateApplyLog("更新完成, 面板将自动重启")
+	exec.Command("cmd", "/c", batPath).Start()
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		exe2, _ := os.Executable()
-		cmd := exec.Command(exe2)
-		cmd.Start()
+		time.Sleep(800 * time.Millisecond)
 		os.Exit(0)
 	}()
 	return "更新成功, 面板即将重启", nil
