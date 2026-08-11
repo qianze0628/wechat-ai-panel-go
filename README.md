@@ -118,7 +118,7 @@ http://localhost:8081
 
 ### ⬆️ 从旧版 (≤v0.5.2) 升级
 
-> **必须手动替换 exe**。旧版面板 (≤v0.5.2) 的"面板内一键更新"会从 GitHub 资产列表取**第一个资产 (macOS 版)** → 下载错平台 → 无法完成升级。请直接：
+> **推荐手动替换 exe**（最可靠；若面板内更新可用也可直接点"立即更新"）。
 
 1. 到 [Releases](https://github.com/qianze0628/wechat-ai-panel-go/releases/latest) 下载
    `wechat-ai-panel_<最新版>_windows_amd64.exe`（Windows）
@@ -126,7 +126,8 @@ http://localhost:8081
 3. 用下载的 exe **替换**原来的 `wechat-ai-panel.exe`（同目录）
 4. 重新启动面板 → 版本显示为最新版 → 重试"一键部署"
 
-> v0.5.3+ 已修复自动更新资产名（后端按平台自算），后续小版本可直接面板内升级。
+> 面板内"一键更新"在 release 含多平台资产时可能取错资产（旧版前端取 assets[0]）；
+> v0.5.5 起 release 只传 Windows 资产，面板内更新可用，但手动替换永远最稳。
 
 ### 🇨🇳 国内镜像加速 (免代理)
 
