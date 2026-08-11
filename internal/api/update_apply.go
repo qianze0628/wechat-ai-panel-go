@@ -35,12 +35,18 @@ func currentExe() (string, error) {
 	return os.Executable()
 }
 
-// assetForPlatform 返回本平台对应的 release asset 名
+// assetForPlatform 返回本平台对应的 release asset 名 (用目标版本号构造)
 // 修复 (2026-08-11): release 资产名是 wechat-ai-panel_<version>_<os>_<arch>.exe (带版本号, 无 zip),
 // 之前返回 wechat-ai-panel-windows-amd64.zip → 下载 URL 404 → 面板更新失败。
-// 资产名格式与发布脚本 (release/ 下的五平台编译) 完全一致。
+// 修复 (2026-08-11 agent 审查): 版本号必须用**目标更新版本**, 不能用当前运行版本
+// (从 v0.5.2 更新到 v0.5.3 时, 用当前版 v0.5.2 构造资产名 → v0.5.3/wechat-ai-panel_0.5.2... → 404)
 func assetForPlatform() string {
-	v := strings.TrimPrefix(VersionTag(), "v")
+	return assetForVersion(VersionTag())
+}
+
+// assetForVersion 用指定版本构造资产名 (目标版本来自 applyUpdate 的 version 参数)
+func assetForVersion(v string) string {
+	v = strings.TrimPrefix(v, "v")
 	switch runtime.GOOS {
 	case "windows":
 		return "wechat-ai-panel_" + v + "_windows_amd64.exe"
@@ -201,7 +207,9 @@ func extractArchive(archivePath, destDir string) (string, error) {
 
 // applyUpdate 执行自动更新 (下载→解压→替换→返回重启命令)
 func applyUpdate(version string) (string, error) {
-	asset := assetForPlatform()
+	// 修复 (2026-08-11 agent 审查): 资产名必须用**目标版本**构造
+	// (assetForPlatform() 用当前版本 → 从旧版更新时 URL 404)
+	asset := assetForVersion(version)
 	if asset == "" {
 		return "", fmt.Errorf("不支持当前平台: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
