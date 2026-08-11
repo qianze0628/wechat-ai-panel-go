@@ -137,6 +137,8 @@ func main() {
 	srv.RegisterQr(&cfg)
 	// ChatUI 链路测试 (信息→wechatbot→AstrBot→模型)
 	srv.RegisterChat(&cfg)
+	// 群聊配置 (回复所有群聊开关, 读写 wechat-bot .env)
+	srv.RegisterWechatEnv(&cfg)
 	// MCP/Skills 管理入口移除 (让用户在 AstrBot 内自行配置; 2026-08)
 	// 安装引擎
 	srv.RegisterInstall(&cfg)

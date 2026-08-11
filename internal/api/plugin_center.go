@@ -263,6 +263,10 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 				rawS, _ := os.ReadFile(filepath.Join(pdir, "_conf_schema.yaml"))
 				_ = json.Unmarshal(rawS, &schema)
 			}
+			// 修复 (2026-08-11): 前端只渲染 object 类型(item 含字段), 顶层 bool/string/int/list
+			// 字段 (如 meme_generator 的 enable_plugin/trigger_prefix 等) 会被跳过 →
+			// 插件中心"该有开关的地方没有显示"。归一化: 顶层非 object 字段并入合成 section。
+			schema = normalizeConfSchema(schema)
 			jsonOK(w, map[string]any{"ok": true, "config": cfgVal, "schema": schema, "config_path": cfgFile})
 		case http.MethodPost:
 			var body map[string]any
@@ -271,6 +275,17 @@ func (h *Handler) RegisterPluginCenter(cfg *config.Config) {
 				return
 			}
 			val, _ := body["config"].(map[string]any)
+			// 逆归一化 (2026-08-11): 前端保存 `_top` section (归一化时合成的) →
+			// 展开回顶层键, 保证插件代码读到 config['enable_plugin'] 而非 config['_top']['enable_plugin']
+			if top, ok := val["_top"].(map[string]any); ok && len(top) > 0 {
+				for k, v := range top {
+					// 不覆盖已存在的同键 (前端可能同时传了顶层与 _top)
+					if _, exists := val[k]; !exists {
+						val[k] = v
+					}
+				}
+				delete(val, "_top")
+			}
 			// 写回配置的实际位置 (插件目录 config.json 或 数据目录 config/<name>_config.json)
 			cfgFile := pluginConfigFile(cfg, id, pdir)
 			// 递归深合并已有配置 (修复 2026-08-10: 之前只合并顶层键,
@@ -480,4 +495,57 @@ func deepMergeMap(dst, src map[string]any) {
 		}
 		dst[k] = sv
 	}
+}
+
+// normalizeConfSchema 归一化插件配置 schema: 前端只渲染 object 类型的 section
+// (type="object" 且 items 非空), 顶层 bool/string/int/list 等字段 (如 meme_generator
+// 的 enable_plugin/trigger_prefix...) 会被整体跳过 → 插件中心"该有开关的地方没有显示"。
+// 修复: 把顶层这些散字段并入一个合成 section "_top" (type=object + items), 前端即可渲染。
+func normalizeConfSchema(schema any) any {
+	m, ok := schema.(map[string]any)
+	if !ok {
+		return schema
+	}
+	var topItems map[string]any
+	// 遍历顶层: 非 object 类型或 object 但无有效 items 的 → 挪进 _top
+	for k, v := range m {
+		f, fok := v.(map[string]any)
+		if !fok {
+			// 极简格式 (直接字段定义, 无 type 包裹)
+			if topItems == nil {
+				topItems = map[string]any{}
+			}
+			topItems[k] = v
+			delete(m, k)
+			continue
+		}
+		typ, _ := f["type"].(string)
+		if typ != "object" {
+			if topItems == nil {
+				topItems = map[string]any{}
+			}
+			topItems[k] = v
+			delete(m, k)
+			continue
+		}
+		// object 类型但 items 为空/缺 → 也归入 _top (无有效 section)
+		items, iok := f["items"].(map[string]any)
+		if !iok || len(items) == 0 {
+			if topItems == nil {
+				topItems = map[string]any{}
+			}
+			topItems[k] = v
+			delete(m, k)
+			continue
+		}
+	}
+	if len(topItems) > 0 {
+		m["_top"] = map[string]any{
+			"type":        "object",
+			"description": "基本设置",
+			"items":  topItems,
+			"_derived":    true, // 合成 section 标记 (前端可显示, 避免歧义)
+		}
+	}
+	return m
 }

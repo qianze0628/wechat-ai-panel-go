@@ -64,6 +64,126 @@ const patchEntryInsert = `        if event.get_message_type() != MessageType.GRO
 // patchMarker 检测标记: 文件含此字符串视为已打补丁
 const patchMarker = "_is_ai_related"
 
+// ---- whitelist_check 热重载补丁 (2026-08-11) ----
+// 背景: WhitelistCheckStage 的 whitelist 只在 initialize 一次性读入内存, 面板 ChatUI 注入/
+// 白名单管理器写 cmd_config.json 后必须重启 AstrBot 才生效。本补丁加 mtime 热重载:
+// 每次事件前检测配置文件 mtime, 变更则自动重读白名单 → 写入立即生效, 无需重启。
+// AstrBot 升级 (uv tool install 覆盖 site-packages) 后会丢失, 由本模块自动重打。
+
+const wlPatchMarker = "_reload_if_changed"
+
+// wlPatchContent 补丁后的完整 stage.py (与当前 AstrBot 版本一致, 升级后可能微调:
+// 用 marker 检测, 缺失则重写整个文件并保留逻辑等价)
+const wlPatchContent = `from collections.abc import AsyncGenerator
+import os
+import json as _json
+
+from astrbot.core import logger
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.message_type import MessageType
+
+from ..context import PipelineContext
+from ..stage import Stage, register_stage
+
+
+@register_stage
+class WhitelistCheckStage(Stage):
+    """检查是否在群聊/私聊白名单"""
+
+    async def initialize(self, ctx: PipelineContext) -> None:
+        self._ctx = ctx
+        self.enable_whitelist_check = ctx.astrbot_config["platform_settings"][
+            "enable_id_white_list"
+        ]
+        self._load_whitelist()
+        self.wl_ignore_admin_on_group = ctx.astrbot_config["platform_settings"][
+            "wl_ignore_admin_on_group"
+        ]
+        self.wl_ignore_admin_on_friend = ctx.astrbot_config["platform_settings"][
+            "wl_ignore_admin_on_friend"
+        ]
+        self.wl_log = ctx.astrbot_config["platform_settings"]["id_whitelist_log"]
+        # 热重载 (2026-08-11): 配置文件 mtime 变化时自动重读白名单, 无需重启 AstrBot
+        # 面板 ChatUI 注入/白名单管理器写 cmd_config.json 后立即生效
+        self._cfg_path = getattr(ctx.astrbot_config, "config_path", None) or ""
+        self._cfg_mtime = self._stat_mtime(self._cfg_path)
+        self._reload_count = 0
+
+    def _stat_mtime(self, path: str) -> float:
+        try:
+            return os.path.getmtime(path)
+        except Exception:
+            return -1.0
+
+    def _load_whitelist(self):
+        raw = self._ctx.astrbot_config["platform_settings"]["id_whitelist"]
+        self.whitelist = [
+            str(i).strip() for i in raw if str(i).strip() != ""
+        ]
+
+    def _reload_if_changed(self):
+        """mtime 检测: 配置文件被外部修改(面板/插件)后重读白名单, 立即生效"""
+        if not self._cfg_path:
+            return
+        mtime = self._stat_mtime(self._cfg_path)
+        if mtime != self._cfg_mtime:
+            self._cfg_mtime = mtime
+            try:
+                with open(self._cfg_path, encoding="utf-8-sig") as f:
+                    data = _json.load(f)
+                ps = data.get("platform_settings", {})
+                self.enable_whitelist_check = ps.get("enable_id_white_list", self.enable_whitelist_check)
+                self._load_whitelist()
+                self._reload_count += 1
+                if self.wl_log:
+                    logger.info(f"[whitelist] 白名单热重载 #{self._reload_count}: 共 {len(self.whitelist)} 项")
+            except Exception as e:
+                logger.error(f"[whitelist] 热重载失败(忽略, 沿用旧白名单): {e}")
+
+    async def process(
+        self,
+        event: AstrMessageEvent,
+    ) -> None | AsyncGenerator[None, None]:
+        # 热重载: 每次事件先检测配置变更
+        self._reload_if_changed()
+        if not self.enable_whitelist_check:
+            # 白名单检查未启用
+            return
+
+        if len(self.whitelist) == 0:
+            # 白名单为空，不检查
+            return
+
+        if event.get_platform_name() == "webchat":
+            # WebChat 豁免
+            return
+
+        # 检查是否在白名单
+        if self.wl_ignore_admin_on_group:
+            if (
+                event.role == "admin"
+                and event.get_message_type() == MessageType.GROUP_MESSAGE
+            ):
+                return
+        if self.wl_ignore_admin_on_friend:
+            if (
+                event.role == "admin"
+                and event.get_message_type() == MessageType.FRIEND_MESSAGE
+            ):
+                return
+        if (
+            event.unified_msg_origin not in self.whitelist
+            and str(event.get_group_id()).strip() not in self.whitelist
+        ):
+            if self.wl_log:
+                logger.info(
+                    f"Session ID {event.unified_msg_origin} is not in the session "
+                    "allowlist, so event propagation was stopped. Add this session "
+                    "ID to the allowlist in the configuration file.",
+                )
+            event.stop_event()
+`
+
 // ---- 定位 AstrBot site-packages ----
 
 // astrbotSitePackagesOverride 测试/特殊环境可注入固定路径 (优先于自动探测)
