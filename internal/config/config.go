@@ -300,6 +300,19 @@ func (c *Config) Validate() error {
 	if c.Astrbot.CmdConfig == "" {
 		errs = append(errs, "astrbot.cmd_config 不能为空")
 	}
+	// 修复 (2026-08-12): 配置指向不存在的盘符/目录 (如无 D 盘但写 D:\.astrbot-root) —
+	// 明确提示用户, 避免实例信息"显示目录但实际不存在"的困惑 (前端顶部黄条提示)。
+	if c.AstrbotRoot != "" {
+		if _, err := os.Stat(c.AstrbotRoot); err != nil {
+			// Windows 下可进一步判断盘符是否存在; 统一提示为目录不存在
+			errs = append(errs, fmt.Sprintf("astrbot_root 目录不存在: %s (检查盘符/路径; 面板会自动回退到用户目录)", c.AstrbotRoot))
+		}
+	}
+	if c.AstrbotDataDir != "" {
+		if _, err := os.Stat(c.AstrbotDataDir); err != nil {
+			errs = append(errs, fmt.Sprintf("astrbot_data_dir 目录不存在: %s (AstrBot 会回退到默认位置)", c.AstrbotDataDir))
+		}
+	}
 	c.ConfigErrors = errs
 	return nil // 错误仅记录, 不阻断
 }
