@@ -161,8 +161,18 @@ func (h *Handler) RegisterWechatEnv(cfg *config.Config) {
 			}
 			// 显式设置白名单 (关闭回复所有群时的群列表; 开启时也允许显式覆盖)
 			if body.RoomWhitelist != "" {
-				updates["ROOM_WHITELIST"] = strings.TrimSpace(body.RoomWhitelist)
-				roomWL = strings.TrimSpace(body.RoomWhitelist)
+				// 防御 (2026-08-11): 编码破坏检测 — 群名全是 '?' 是编码损坏特征
+				// (PowerShell/旧工具写中文变 '?'), 拒绝写入避免群聊全被白名单拦截
+				trimmedWL := strings.TrimSpace(body.RoomWhitelist)
+				if strings.Contains(trimmedWL, "?") {
+					qCount := strings.Count(trimmedWL, "?")
+					if qCount >= len(strings.ReplaceAll(trimmedWL, "?", "")) && qCount > 0 {
+						jsonErr(w, 400, "群白名单含编码损坏字符 '?', 已拒绝写入。请重新选择群聊保存 (中文群名需 UTF-8 编码)")
+						return
+					}
+				}
+				updates["ROOM_WHITELIST"] = trimmedWL
+				roomWL = trimmedWL
 			}
 			if body.RoomChatEnabled != nil {
 				updates["ROOM_CHAT_ENABLED"] = map[bool]string{true: "true", false: "false"}[*body.RoomChatEnabled]
