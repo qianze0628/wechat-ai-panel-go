@@ -36,22 +36,47 @@ func currentExe() (string, error) {
 }
 
 // assetForPlatform 返回本平台对应的 release asset 名
+// 修复 (2026-08-11): release 资产名是 wechat-ai-panel_<version>_<os>_<arch>.exe (带版本号, 无 zip),
+// 之前返回 wechat-ai-panel-windows-amd64.zip → 下载 URL 404 → 面板更新失败。
+// 资产名格式与发布脚本 (release/ 下的五平台编译) 完全一致。
 func assetForPlatform() string {
+	v := strings.TrimPrefix(VersionTag(), "v")
 	switch runtime.GOOS {
 	case "windows":
-		return "wechat-ai-panel-windows-amd64.zip"
+		return "wechat-ai-panel_" + v + "_windows_amd64.exe"
 	case "linux":
+		arch := "amd64"
 		if runtime.GOARCH == "arm64" {
-			return "wechat-ai-panel-linux-arm64.tar.gz"
+			arch = "arm64"
 		}
-		return "wechat-ai-panel-linux-amd64.tar.gz"
+		return "wechat-ai-panel_" + v + "_linux_" + arch
 	case "darwin":
+		arch := "amd64"
 		if runtime.GOARCH == "arm64" {
-			return "wechat-ai-panel-darwin-arm64.tar.gz"
+			arch = "arm64"
 		}
-		return "wechat-ai-panel-darwin-amd64.tar.gz"
+		return "wechat-ai-panel_" + v + "_darwin_" + arch
 	}
 	return ""
+}
+
+// copyFile 复制文件 (用于裸 exe 资产)
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	cerr := out.Close()
+	if err != nil {
+		return err
+	}
+	return cerr
 }
 
 // downloadFile 下载文件到本地 (支持 302 跟随 + 超时)
@@ -81,8 +106,18 @@ func downloadFile(url, dest string) error {
 }
 
 // extractArchive 解压 zip/tar.gz 到目录, 返回内部可执行文件名
+// 修复 (2026-08-11): release 资产是裸 exe (无 zip/tar.gz) → 直接复制, 不走到 tar.gz 分支报错
 func extractArchive(archivePath, destDir string) (string, error) {
 	os.MkdirAll(destDir, 0o755)
+	if !strings.HasSuffix(archivePath, ".zip") && !strings.HasSuffix(archivePath, ".tar.gz") && !strings.HasSuffix(archivePath, ".tgz") {
+		// 裸可执行文件 (release 资产 = wechat-ai-panel_<v>_<os>_<arch>.exe)
+		target := filepath.Join(destDir, filepath.Base(archivePath))
+		if err := copyFile(archivePath, target); err != nil {
+			return "", err
+		}
+		_ = os.Chmod(target, 0o755)
+		return target, nil
+	}
 	if strings.HasSuffix(archivePath, ".zip") {
 		zr, err := zip.OpenReader(archivePath)
 		if err != nil {

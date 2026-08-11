@@ -590,6 +590,18 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	setStage("clone", "拉取 wechat-bot 源码", 0)
 	cloneTask := findTask(tasks, "clone")
 	if cloneTask != nil {
+		// 前置检查 (2026-08-11): git 不可用时报明确中文错误, 避免"git not found"模糊失败
+		// (便携 MinGit 安装后 which2 检测不到 → 之前误报"环境就绪"但 clone 却失败)
+		if which2("git") == "" {
+			addLog("[clone] [error] git 命令不可用 (环境检测失败)。请先在「环境」步骤安装 git 或手动安装: https://git-scm.com/downloads")
+			stageDone("clone", "git 不可用", "git 命令不存在, 无法 clone")
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "git 不可用 (便携安装后检测失败)。\n手动方案: ① 到 https://git-scm.com/downloads 安装 Git;\n② 或用浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP, 解压后重命名为 wechat-bot-windows 放到本程序目录"
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
 		addLog("[clone] [start] " + cloneTask["label"])
 		_ = os.MkdirAll(wechatDir, 0o755)
 		repo := cloneTask["repo"]

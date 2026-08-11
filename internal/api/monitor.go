@@ -95,10 +95,33 @@ func which2(name string) string {
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
 	}
+	// Windows 上 npm 是 npm.cmd (便携 node 无 npm.exe), git 有 git.exe;
+	// 追加 .cmd 变体保证检测到 (2026-08-11 修复: 便携 node 装完 which2("npm") 找不到)
+	altExt := ""
+	if runtime.GOOS == "windows" && name == "npm" {
+		altExt = ".cmd"
+	}
 	candidates := []string{}
 	// 用户级安装目录
 	for _, sub := range []string{".local\\bin", "AppData\\Roaming\\uv\\bin", "AppData\\Roaming\\uv"} {
 		candidates = append(candidates, filepath.Join(home, sub, name+ext))
+		if altExt != "" {
+			candidates = append(candidates, filepath.Join(home, sub, name+altExt))
+		}
+	}
+	// 面板自管理便携工具目录 (2026-08-11 修复: 便携 MinGit/Node 装到 ~/.wechat-ai-panel/ 后
+	// which2 检测不到 → "git 安装后检测仍不可用" 的根因。需与 install.go PATH 注入一致)
+	portableDirs := []string{
+		filepath.Join(home, ".wechat-ai-panel", "nodejs"),                 // node.exe/npm.cmd
+		filepath.Join(home, ".wechat-ai-panel", "git", "cmd"),             // git.exe
+		filepath.Join(home, ".wechat-ai-panel", "git", "mingw64", "bin"),  // git.exe (部分版本结构)
+		filepath.Join(home, ".wechat-ai-panel", "git"),                    // 兜底根目录
+	}
+	for _, d := range portableDirs {
+		candidates = append(candidates, filepath.Join(d, name+ext))
+		if altExt != "" {
+			candidates = append(candidates, filepath.Join(d, name+altExt))
+		}
 	}
 	// 标准系统安装目录 (winget/nvm 装的 node; Git for Windows; Python)
 	// 修复 (2026-08-10): 之前缺这些 → 全新电脑 winget 装 node/git 后 which2 找不到
@@ -112,6 +135,9 @@ func which2(name string) string {
 	}
 	for _, d := range sysDirs {
 		candidates = append(candidates, filepath.Join(d, name+ext))
+		if altExt != "" {
+			candidates = append(candidates, filepath.Join(d, name+altExt))
+		}
 	}
 	for _, c := range candidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
