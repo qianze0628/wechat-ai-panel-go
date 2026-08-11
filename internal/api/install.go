@@ -222,28 +222,28 @@ func envInstallCmd(platform, name string) *exec.Cmd {
 				arch = "aarch64-pc-windows-msvc"
 			}
 			uvVer := "0.6.14" // 稳定版本 (更新时同步改)
-			// 修复 (2026-08-10): 增加国内可达源: astral.sh 官方 (大陆可直连) + npmmirror 镜像 + gh-proxy
-			urlAstral := "https://astral.sh/uv/" + uvVer + "/uv-" + arch + ".zip"
+			// 修复 (2026-08-11 agent 审查 P0-1/P0-2): astral.sh/uv/<ver>/uv-*.zip 实测 404 (官方路径已改),
+			// npmmirror uv 镜像也 404 (无该目录) → 删除这两个坏源。实测可用:
+			//   gh-proxy (200) + 直连 GitHub release (200)。
 			urlMirror := "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
-			urlNpmmirror := "https://npmmirror.com/mirrors/uv/uv-" + arch + ".zip"
 			urlDirect := "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
 			// 镜像配置里的 git clone proxy 也可用作文件下载加速前缀
 			urlGhfast := ""
 			if mirrorGitCloneProxy != "" {
 				urlGhfast = mirrorGitCloneProxy + "https://github.com/astral-sh/uv/releases/download/" + uvVer + "/uv-" + arch + ".zip"
 			}
-			// 用 PowerShell 依次尝试 (astral官方→npmmirror→ghfast→gh-proxy→直连), 解压 zip 到 %USERPROFILE%\.local\bin
+			// 用 PowerShell 依次尝试 (ghfast→gh-proxy→直连), 解压 zip 到 %USERPROFILE%\.local\bin
 			// 修复: 全英文输出避免 GBK 乱码; 目标 uv.exe 共存时先改名旧的再复制; 最后必须 Test-Path 成功才 exit 0
 			ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " +
 				"$target = Join-Path $env:USERPROFILE '.local\\bin'; " +
 				"New-Item -ItemType Directory -Force -Path $target | Out-Null; " +
 				"$zip = Join-Path $env:TEMP 'uv-installer.zip'; " +
-				"$urls = @('" + urlAstral + "', '" + urlNpmmirror + "'); " +
-				"if ('" + urlGhfast + "' -ne '') { $urls = @('" + urlGhfast + "') + $urls }; " +
-				"$urls = $urls + @('" + urlMirror + "', '" + urlDirect + "'); " +
+				"$urls = @('" + urlGhfast + "', '" + urlMirror + "', '" + urlDirect + "'); " +
 				"$ok = $false; " +
 				"foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 45; if ((Get-Item $zip -ErrorAction SilentlyContinue).Length -gt 100000) { $ok = $true; break } } catch { Write-Output ('[download-fail] ' + $u); Remove-Item $zip -Force -ErrorAction SilentlyContinue } }; " +
 				"if (-not $ok) { Write-Error 'uv download failed from all sources. Manual install: https://github.com/astral-sh/uv/releases'; exit 1 }; " +
+				// 修复 (2026-08-11 agent 审查 P1-2): 校验下载内容是真实 zip (非 HTML 404 页) — 解压后必须存在 uv.exe
+				"try { $chk = Join-Path $env:TEMP ('uvchk' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force -Path $chk | Out-Null; [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $chk); if (-not (Test-Path (Join-Path $chk 'uv.exe'))) { throw 'zip 内无 uv.exe (下载内容错误)' }; Remove-Item $chk -Recurse -Force -ErrorAction SilentlyContinue } catch { Write-Error ('uv zip 校验失败: ' + $_.Exception.Message); exit 1 }; " +
 				"Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
 				"$tmp = Join-Path $env:TEMP ('uv' + [guid]::NewGuid().ToString('N')); " +
 				"[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp); " +

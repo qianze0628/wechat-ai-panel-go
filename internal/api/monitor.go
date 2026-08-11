@@ -133,6 +133,13 @@ func which2(name string) string {
 		`C:\Python312`,
 		`C:\Python313`,
 	}
+	// 修复 (2026-08-11 agent 审查 P0-3): winget 装 Python 3.12 实际装到
+	// %LOCALAPPDATA%\Programs\Python\Python312\ (user 级), 不在 C:\Program Files → 之前检测不到
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		for _, sub := range []string{`Programs\Python\Python312`, `Programs\Python\Python313`, `Programs\Python\Python311`} {
+			sysDirs = append(sysDirs, filepath.Join(local, sub))
+		}
+	}
 	for _, d := range sysDirs {
 		candidates = append(candidates, filepath.Join(d, name+ext))
 		if altExt != "" {

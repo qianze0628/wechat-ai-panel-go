@@ -287,10 +287,11 @@ func applyUpdate(version string) (string, error) {
 	}
 
 	// 7. 启动 bat 后本进程退出 (bat 会在 1s 后替换并重启面板)
+	// 修复 (2026-08-11 agent 审查 P2-2): 用 start /b 独立启动 bat, 避免 os.Exit 杀掉 cmd 子进程
 	updateApplyLog("更新完成, 面板将自动重启")
-	exec.Command("cmd", "/c", batPath).Start()
+	exec.Command("cmd", "/c", "start", "/b", "", batPath).Start()
 	go func() {
-		time.Sleep(800 * time.Millisecond)
+		time.Sleep(1500 * time.Millisecond)
 		os.Exit(0)
 	}()
 	return "更新成功, 面板即将重启", nil

@@ -477,13 +477,22 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 		cloneURL = cfg.Mirrors.GitCloneProxy + strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
 	}
 	// git clone 超时 120s (防挂起)
+	// 修复 (2026-08-11 agent 审查 P0-5): exec.CommandContext 用 os.Environ (进程 PATH 快照),
+	// 不含便携 git 目录 → 全新电脑 clone 必失败。前置检查 + 注入刷新后的 PATH。
+	gitPath := which2("git")
+	if gitPath == "" {
+		return fmt.Errorf("git 命令不可用 (环境未安装 git 或便携版未生效)。请先在「环境」步骤安装 git")
+	}
+	cloneEnv := append(os.Environ(), "PATH="+refreshSystemPath())
 	cloneCtx, cancelClone := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancelClone()
 	cmd := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", cloneURL, pdir)
+	cmd.Env = cloneEnv
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// 若镜像失败回退直连 (清残留再试)
 		_ = os.RemoveAll(pdir)
 		cmd2 := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", repo, pdir)
+		cmd2.Env = cloneEnv
 		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 			return fmt.Errorf("clone 失败: %s / %s", out, out2)
 		}
