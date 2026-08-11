@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"wechat-ai-panel/internal/api"
@@ -156,7 +159,7 @@ func main() {
 	// 更新检测 (GitHub latest + IP 判断国内镜像)
 	srv.RegisterUpdate()
 	// 面板内置自动更新 (下载→替换→重启)
-	api.SetVersionTag("v0.5.0")
+	api.SetVersionTag("v0.5.1")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
@@ -176,7 +179,74 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", host, cfg.Port)
 	log.Printf("[panel] 微信 AI 管理面板 (Go): http://%s:%d", host, cfg.Port)
 	if err := http.ListenAndServe(addr, srv); err != nil {
-		log.Fatalf("监听失败: %v", err)
+		// 修复 (2026-08-11): 端口被占时不再 log.Fatalf 闪退!
+		// 全新用户/升级用户双击新 exe, 旧实例(或本面板另一实例)占着 8080 → 之前直接退出 = "闪退"。
+		// 现在: 先探测占用端口是否仍是本面板 (HTTP 可达), 是则打开浏览器到已有实例并优雅退出;
+		// 否则给出明确中文提示(弹窗), 绝不无提示闪退。
+		if isPortOccupied(host, cfg.Port) {
+			url := fmt.Sprintf("http://%s:%d", host, cfg.Port)
+			if isPanelAlive(url) {
+				log.Printf("[panel] 检测到已有面板实例在 %s 运行, 打开浏览器并退出本实例。", url)
+				openBrowser(url)
+				// 阻塞弹窗: 用户点"确定"才退出 — 面板窗口不会"一闪而过"
+				messageBoxBlocking("微信 AI 管理面板", "检测到面板已在运行 (端口 "+fmt.Sprint(cfg.Port)+")。\n已为你打开面板页面, 本窗口可以关闭。")
+				return // 优雅退出, 不闪退
+			}
+			// 端口被非面板程序占用 → 明确提示 (不是无声闪退)
+			messageBoxBlocking("微信 AI 管理面板", "端口 "+fmt.Sprint(cfg.Port)+" 已被其他程序占用。\n请关闭占用该端口的程序后重试, 或在 config.json 中修改 port。")
+			log.Printf("监听失败且端口被非面板程序占用: %v", err)
+			return
+		}
+		log.Printf("监听失败: %v", err)
+	}
+}
+
+// isPortOccupied 端口是否被占用 (TCP 连接测试)
+func isPortOccupied(host string, port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 1500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// isPanelAlive 探测该端口是否本面板 (GET /api/status 返回 200)
+func isPanelAlive(url string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest("GET", url+"/api/status", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// openBrowser 打开系统浏览器 (跨平台)
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", "start", "", url)
+	} else if runtime.GOOS == "darwin" {
+		cmd = exec.Command("open", url)
+	} else {
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
+// messageBoxBlocking Windows 弹窗提示 (阻塞等待用户确认, 面板窗口不"一闪而过"); 其他平台打日志
+func messageBoxBlocking(title, text string) {
+	if runtime.GOOS == "windows" {
+		ps := fmt.Sprintf("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('%s', '%s')",
+			strings.ReplaceAll(text, "'", "''"), strings.ReplaceAll(title, "'", "''"))
+		_ = exec.Command("powershell", "-NoProfile", "-Command", ps).Run() // Run=等待, 弹窗可见
+	} else {
+		log.Printf("[panel] %s: %s", title, text)
 	}
 }
 
