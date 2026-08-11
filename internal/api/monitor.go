@@ -73,23 +73,11 @@ func findAstrbotExePath() string {
 	return which2("astrbot")
 }
 
-// which2 查找可执行文件: PATH + Windows 常见安装目录回退
-// 修复: uv 官方脚本装到 %USERPROFILE%\.local\bin (curl) 或 Roaming\uv\bin (pip),
-// 面板进程 PATH 是启动快照, 安装后新目录不在 PATH → LookPath 找不到 → "安装后仍不可用"
+// which2 查找可执行文件: 候选目录优先 + PATH (每次刷新注册表) 回退
+// 修复 (2026-08-12 对抗审查 P0): 之前 exec.LookPath 用面板进程启动快照 PATH —
+// 便携 MinGit 解压后同进程 LookPath 永远 miss → "git portable OK 但检测仍不可用"必现。
+// 现在: ① 先扫候选目录 (含便携/系统已知目录, 不依赖 PATH) ② 再刷新注册表 PATH 后 LookPath。
 func which2(name string) string {
-	if p, err := exec.LookPath(name); err == nil {
-		// 修复 (2026-08-10): WindowsApps 商店别名 stub 会命中 LookPath 但不可用 (0 字节 reparse),
-		// 误判为"已装 Python"。对 python 校验文件大小, stub 跳过继续找真 Python。
-		if name == "python" {
-			if fi, serr := os.Stat(p); serr != nil || fi.IsDir() || (fi.Size() > 0 && fi.Size() < 1024) {
-				// stub 或无效 → 继续查找
-			} else {
-				return p
-			}
-		} else {
-			return p
-		}
-	}
 	home, _ := os.UserHomeDir()
 	ext := ""
 	if runtime.GOOS == "windows" {
@@ -146,6 +134,7 @@ func which2(name string) string {
 			candidates = append(candidates, filepath.Join(d, name+altExt))
 		}
 	}
+	// ① 候选目录优先判存在 (不依赖进程 PATH 快照; Windows 文件系统直接判)
 	for _, c := range candidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
 			// 修复 (2026-08-10): WindowsApps 商店别名 stub (python.exe 0 字节 reparse) 会骗过 LookPath。
@@ -156,7 +145,57 @@ func which2(name string) string {
 			return c
 		}
 	}
+	// ② 注册表 PATH 刷新后 LookPath (修复: 进程 PATH 是启动快照, 面板装完的工具在注册表但当前会话 PATH
+	// 不变 → 以前 LookPath miss; refreshSystemPath 从注册表重读合并后再查)
+	if runtime.GOOS == "windows" {
+		if p, err := lookupWithSystemPath(name); err == nil && p != "" {
+			if name == "python" {
+				if fi, serr := os.Stat(p); serr != nil || fi.IsDir() || (fi.Size() > 0 && fi.Size() < 1024) {
+					// stub 或无效 → 继续
+				} else {
+					return p
+				}
+			} else {
+				return p
+			}
+		}
+	} else {
+		// 非 Windows: 原 LookPath (PATH 一般由包管理器安装后已生效)
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
 	return ""
+}
+
+// lookupWithSystemPath 用"注册表最新 PATH + 便携可执行扩展名"做 LookPath。
+// 修复 (2026-08-12 对抗审查 P0): exec.LookPath 只认面板进程 PATH 快照, 而 refreshSystemPath
+// 从注册表重读的系统/用户 PATH 从未生效到当前进程 → which2 检测不到"刚装好的便携工具"。
+// 因此这里用 refreshSystemPath (合并注册表 PATH) + 候选扩展名(.exe/.cmd) 手工查路径。
+func lookupWithSystemPath(name string) (string, error) {
+	sysPath := refreshSystemPath()
+	if sysPath == "" {
+		return "", fmt.Errorf("PATH 为空")
+	}
+	exts := []string{""}
+	if runtime.GOOS == "windows" {
+		exts = []string{".exe", ".cmd", ".bat"}
+	}
+	if name == "npm" {
+		exts = []string{".cmd", ".exe", ""}
+	}
+	for _, d := range filepath.SplitList(sysPath) {
+		if d == "" {
+			continue
+		}
+		for _, ext := range exts {
+			cand := filepath.Join(d, name+ext)
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				return cand, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("not found in system PATH")
 }
 
 // RegisterMonitor 注册监控路由 (env/system/logs/messages)
