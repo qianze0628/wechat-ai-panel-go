@@ -2,6 +2,7 @@
 package process
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -187,6 +188,13 @@ func (s *Services) startAstrbot() (bool, string) {
 		fmt.Printf("[process] astrbot_root 不可用 (%s), 回退工作目录到 %s\n", s.Cfg.AstrbotRoot, wd)
 		workDir = wd
 	}
+	// 修复 (2026-08-15): AstrBot 的 check_astrbot_root (cli/utils/basic.py) 要求 root 下存在
+	// .astrbot 标记 (init 创建的文件); 全新电脑 root 从未 init → "not a valid AstrBot root directory" 必崩。
+	// 在此幂等补 init: 已有 .astrbot 则跳过; 缺失则调 astrbot init -y (cwd=root, 与 AstrBot 官方行为一致,
+	// 含 FileLock + check_dashboard 资产检查; cmd_config.json 由 AstrBot 首次启动时自动生成)。
+	if ok, msg := ensureAstrbotRoot(workDir, exe); !ok {
+		return false, fmt.Sprintf("AstrBot 启动失败: %s", msg)
+	}
 	cmd, err := s.spawnService("astrbot", []string{exe, "run"}, workDir,
 		s.Cfg.Logs.AstrbotStdout, s.Cfg.Logs.AstrbotStderr)
 	if err != nil {
@@ -293,6 +301,35 @@ func (s *Services) startQr() (bool, string) {
 	s.cmd["qr"] = cmd
 	s.mu.Unlock()
 	return true, fmt.Sprintf("qr-server 已启动 (PID %d)", cmd.Process.Pid)
+}
+
+// ensureAstrbotRoot 确保 root 目录对 AstrBot 有效: 无 .astrbot 标记时自动执行
+// `astrbot init -y` (cwd=root) 补初始化, 幂等。返回 (是否就绪, 失败原因)。
+// 与 AstrBot 自身定义保持一致: root 有效 = 目录存在且含 .astrbot 标记
+// (cli/utils/basic.py check_astrbot_root; init 以 touch 方式创建该文件)。
+func ensureAstrbotRoot(root, exe string) (bool, string) {
+	marker := filepath.Join(root, ".astrbot")
+	if fi, err := os.Stat(marker); err == nil && !fi.IsDir() {
+		return true, "" // 已初始化, 跳过
+	}
+	fmt.Printf("[process] astrbot_root 缺少 .astrbot 标记 (%s), 自动执行 astrbot init -y ...\n", marker)
+	// init 需免确认 (-y): 面板无交互 stdin, 不带 -y 时 click.confirm(abort=True) 直接抛错
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// 必须设置 Cmd.Dir = root: astrbot 的 get_astrbot_root() 取 Path.cwd(),
+	// 面板进程自身的 cwd 不一定是 root, 不设 dir 会 init 到错误位置
+	icmd := exec.CommandContext(ctx, exe, "init", "-y")
+	icmd.Dir = root
+	out, err := icmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Sprintf("astrbot init 失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if fi, err := os.Stat(marker); err != nil || fi.IsDir() {
+		// init 未按预期创建标记 (如超时/被中断) → 明确失败而非带病启动
+		return false, "astrbot init 未创建 .astrbot 标记, 启动中止"
+	}
+	fmt.Printf("[process] astrbot init 完成: %s\n", strings.TrimSpace(string(out)))
+	return true, ""
 }
 
 // findAstrbotExe 查找 astrbot 可执行文件 (uv tools → PATH)

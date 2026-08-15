@@ -74,11 +74,47 @@ func platformEntry(cfg *config.Config) map[string]any {
 	}
 }
 
+// ensureCmdConfigExists 确保 cmd_config.json 存在: 不存在时自动生成最小合法配置。
+// 第一性原理 (2026-08-15 v0.6.1): AstrBot 首次启动会自动补全缺失配置键
+// (AstrBotConfig.check_config_integrity 递归补默认值), 所以面板只需生成最小骨架,
+// 无需完整 DEFAULT_CONFIG。修复"一键配置 OneBot 报 cmd_config.json 不存在"死结。
+func ensureCmdConfigExists(cfg *config.Config) (string, error) {
+	cfgPath := cfg.Astrbot.CmdConfig
+	if cfgPath == "" {
+		cfgPath = cfg.EffectiveCmdConfig()
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		return cfgPath, nil // 已存在
+	}
+	// 确保目录存在
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		return "", fmt.Errorf("创建 cmd_config 目录失败: %v", err)
+	}
+	// 最小骨架 (AstrBot 启动时自动补全其余默认键)
+	minimal := map[string]any{
+		"config_version": 2,
+		"platform":       []any{},
+		"wake_prefix":    []any{"/"},
+		"platform_settings": map[string]any{
+			"unique_session": true,
+		},
+		"dashboard": map[string]any{
+			"host": "0.0.0.0",
+			"port": 6185,
+		},
+	}
+	if err := util.AtomicWriteJSON(cfgPath, minimal, true); err != nil {
+		return "", fmt.Errorf("生成 cmd_config.json 失败: %v", err)
+	}
+	fmt.Printf("[setup] 已自动生成 cmd_config.json: %s\n", cfgPath)
+	return cfgPath, nil
+}
+
 // setupOneBot 应用 OneBot 配置 (备份 + 原子写) + 重启 AstrBot
 func setupOneBot(cfg *config.Config) (string, error) {
-	cfgPath := cfg.Astrbot.CmdConfig
-	if _, err := os.Stat(cfgPath); err != nil {
-		return "", errors.New("cmd_config.json 不存在: " + cfgPath)
+	cfgPath, err := ensureCmdConfigExists(cfg)
+	if err != nil {
+		return "", err
 	}
 	// 确保白名单插件已安装 (AstrBot 没有内置; /白名单 命令依赖它)
 	// 安装成功/已存在 → 返回提示文案; 安装失败 → 返回错误 (OneBot 配置仍继续, 但提示用户)
@@ -167,7 +203,12 @@ func ensureWhitelistPlugin(cfg *config.Config) (string, error) {
 func setupPreview(cfg *config.Config) map[string]any {
 	cfgPath := cfg.Astrbot.CmdConfig
 	if _, err := os.Stat(cfgPath); err != nil {
-		return map[string]any{"ok": false, "message": "cmd_config.json 不存在"}
+		// 首次使用: cmd_config 尚未生成 → 预览显示"将创建"(不再 404)
+		return map[string]any{
+			"ok": true, "changes": []string{"cmd_config.json 不存在, 将自动生成最小配置并写入 OneBot 平台"},
+			"untouched": []string{"模型 provider (不改动)"},
+			"need_restart": true, "cmd_config": cfgPath, "backup_dir": backupDir(),
+		}
 	}
 	m, err := util.ReadJSONFile(cfgPath)
 	if err != nil {

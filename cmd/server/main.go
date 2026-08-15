@@ -168,7 +168,10 @@ func main() {
 	// 面板内置自动更新 (下载→替换→重启)
 	// (2026-08-15): v0.6.0 — 一键部署零外部依赖: 源码 git clone → HTTP zip 下载,
 	// 移除 git 硬依赖 (朋友无开发环境电脑实测 "git not found" 死结); exec 全部绝对路径。
-	api.SetVersionTag("v0.6.0")
+	// (2026-08-15): v0.6.1 — AstrBot 一键可用: 启动前自动 astrbot init (root 未初始化死结);
+	// cmd_config 权威路径回退 <root>/data/cmd_config.json (配置路径不存在不再 404);
+	// 一键配置自动生成最小 cmd_config; 前端不再要求系统 Python (uv 自管理)。
+	api.SetVersionTag("v0.6.1")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)

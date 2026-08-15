@@ -714,6 +714,24 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		}
 		addLog("[astrbot] [done] AstrBot 已安装")
 	}
+	// (2026-08-15 v0.6.1 第一性原理修复): 安装完成后立即初始化 root (astrbot init -y)。
+	// 之前只 uv tool install, root 从未 init → 前端 astrbot_root.exists=false ("依赖未完全"
+	// 误报) + 启动时 "not a valid AstrBot root directory" 必崩。init 幂等, 已 init 秒过。
+	if root := astrbotRoot; root != "" {
+		if astrbotPath := findAstrbotExePath(); astrbotPath != "" {
+			if err := os.MkdirAll(root, 0o755); err == nil {
+				initCmd := exec.Command(astrbotPath, "init", "-y")
+				initCmd.Dir = root
+				ok3, errMsg3 := runCmd(initCmd, 120*time.Second)
+				if ok3 {
+					addLog("[astrbot] [done] AstrBot root 已初始化: " + root)
+				} else {
+					// 不阻断安装: 启动时 ensureAstrbotRoot 会再尝试
+					addLog("[astrbot] [warn] AstrBot root 初始化失败 (启动时自动重试): " + errMsg3)
+				}
+			}
+		}
+	}
 	stageDone("astrbot", "AstrBot 就绪", "")
 
 	// ===== 阶段 5: 验证 =====

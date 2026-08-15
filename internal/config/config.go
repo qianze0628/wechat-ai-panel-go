@@ -241,6 +241,20 @@ func (c *Config) Load(baseDir string) error {
 	c.AstrbotDataDir = resolve(c.AstrbotDataDir)
 	c.QrServerScript = resolve(c.QrServerScript)
 	c.Astrbot.CmdConfig = resolve(c.Astrbot.CmdConfig)
+	// (2026-08-15 v0.6.1 第一性原理修复): 配置的 cmd_config 指向不存在的文件时,
+	// 自动回退到 AstrBot 权威位置 <astrbot_root>/data/cmd_config.json。
+	// 旧版相对路径 "cmd_config.json" 会解析到 baseDir 下 (如 D:\cmd_config.json),
+	// 与 AstrBot 实际读写位置不一致 → 一键配置 OneBot 报 "cmd_config.json 不存在"。
+	if c.AstrbotRoot != "" {
+		// 权威位置 (AstrBot 固定读写点)
+		authoritative := filepath.Join(c.AstrbotRoot, "data", "cmd_config.json")
+		if c.Astrbot.CmdConfig == "" {
+			c.Astrbot.CmdConfig = authoritative
+		} else if _, err := os.Stat(c.Astrbot.CmdConfig); err != nil {
+			// 配置路径不存在 → 回退权威位置 (不存在也算, 由 setup 自动生成)
+			c.Astrbot.CmdConfig = authoritative
+		}
+	}
 	c.Logs.AstrbotStdout = resolve(c.Logs.AstrbotStdout)
 	c.Logs.AstrbotStderr = resolve(c.Logs.AstrbotStderr)
 	c.Logs.WechatStdout = resolve(c.Logs.WechatStdout)
@@ -254,6 +268,33 @@ func (c *Config) Load(baseDir string) error {
 	c.sanitizeLogPaths(baseDir)
 
 	return c.Validate()
+}
+
+// EffectiveCmdConfig 返回实际生效的 AstrBot cmd_config.json 路径。
+// 第一性原理 (2026-08-15 v0.6.1): AstrBot 的 cmd_config 权威位置固定在
+//   <astrbot_root>/data/cmd_config.json (astrbot_path.py: ASTRBOT_CONFIG_PATH =
+//   get_astrbot_data_path()/cmd_config.json = <root>/data/cmd_config.json)。
+// 用户配置里写的 cmd_config (如相对路径解析到 D:\cmd_config.json) 与 AstrBot 真实位置
+// 不一致时, 必须回退到权威位置, 否则面板读写"不存在"的文件 → 一键配置 OneBot 报 404。
+func (c *Config) EffectiveCmdConfig() string {
+	cfg := c.Astrbot.CmdConfig
+	if cfg != "" {
+		if _, err := os.Stat(cfg); err == nil {
+			return cfg // 配置路径真实存在 → 用它
+		}
+	}
+	// 回退: AstrBot 权威位置 <root>/data/cmd_config.json
+	if c.AstrbotRoot != "" {
+		cand := filepath.Join(c.AstrbotRoot, "data", "cmd_config.json")
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+		// 权威路径目录存在但文件尚未生成 (首次运行前) → 仍返回权威位置, 由调用方生成
+		if _, err := os.Stat(filepath.Join(c.AstrbotRoot, "data")); err == nil {
+			return cand
+		}
+	}
+	return cfg
 }
 
 // sanitizeLogPaths 确保日志目录可写; 不可写时回退到 baseDir/logs
