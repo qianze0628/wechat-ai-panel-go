@@ -718,7 +718,19 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		// 修复 (2026-08-15): npm 同 git — LookPath 不认 cmd.Env 的 PATH, 便携 node 的 npm.cmd
 		// (which2 候选目录可找, 但进程 PATH 快照没有) → 用 which2 绝对路径; Go 1.19+ 可直接
 		// exec .cmd 脚本 (CreateProcess 解析 .cmd 包装), 已实测本机可行, 故无需 cmd /c 包装。
-		cmd := exec.Command(which2Or("npm"), args...)
+		// 修复 (2026-08-15 对抗式审查): which2Or 不再回退裸名 — npm 缺失时明确报错而非
+		// 重入 "executable file not found" 死结 (planInstallTasks 对 npm 缺失只 warn 不装)。
+		npmBin := which2Or("npm")
+		if npmBin == "" {
+			stageDone("npm", "npm 不可用", "npm 未找到 (环境步骤应已安装 node/npm)。请先完成环境安装或手动安装 Node.js")
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "npm 不可用。\n手动方案: ① 到 https://nodejs.org 下载安装 Node.js (含 npm);\n② 或回退: 用浏览器下载 wechat-bot 依赖包"
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		cmd := exec.Command(npmBin, args...)
 		cmd.Dir = wechatDir
 		ok2, errMsg := runCmd(cmd, 600*time.Second)
 		if !ok2 {
@@ -740,7 +752,18 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	setStage("astrbot", "安装 AstrBot", 0)
 	if which2("astrbot") == "" {
 		addLog("[astrbot] [start] uv tool install astrbot")
-		cmd := exec.Command(which2Or("uv"), "tool", "install", "astrbot")
+		// 修复 (2026-08-15 对抗式审查): uv 同 npm — 前置检查, 缺失时明确报错而非裸名重入死结
+		uvBin := which2Or("uv")
+		if uvBin == "" {
+			stageDone("astrbot", "uv 不可用", "uv 未找到 (环境步骤应已安装)。请先完成环境安装或手动安装 uv")
+			installState.mu.Lock()
+			installState.NeedManual = true
+			installState.ManualHint = "uv 不可用。\n手动方案: ① 到 https://docs.astral.sh/uv/ 安装 uv;\n② 然后手动执行: uv tool install astrbot"
+			installState.mu.Unlock()
+			finishInstall(false)
+			return
+		}
+		cmd := exec.Command(uvBin, "tool", "install", "astrbot")
 		ok2, errMsg := runCmd(cmd, 900*time.Second)
 		if !ok2 {
 			stageDone("astrbot", "AstrBot 安装失败", errMsg)
@@ -803,15 +826,13 @@ func findTask(tasks []map[string]string, kind string) map[string]string {
 var gitBin = filepath.Join(func() string { h, _ := os.UserHomeDir(); return h }(),
 	".wechat-ai-panel", "git", "cmd", "git.exe")
 
-// which2Or 取可执行文件的绝对路径 (which2 候选目录优先), 找不到时回退到命令行名字。
+// which2Or 取可执行文件的绝对路径 (which2 候选目录优先), 找不到返回 ""。
 // 修复 (2026-08-15): exec.Command 的 LookPath 只解析面板进程 PATH 快照, cmd.Env 注入的
 // PATH 对 LookPath 无效 → 便携工具 (git/npm 等) 虽被 which2 找到, 但 exec.Command(name)
-// 仍报 "executable file not found in %PATH%"。安装类调用全部改用绝对路径, 空时兜底原名字。
+// 仍报 "executable file not found in %PATH%"。安装类调用全部改用绝对路径;
+// 返回 "" 时调用方须前置检查并给可读错误 (不得回退裸名 — 裸名必然重入旧死结)。
 func which2Or(name string) string {
-	if p := which2(name); p != "" {
-		return p
-	}
-	return name
+	return which2(name)
 }
 
 // latestGitPath 返回校验"文件真实存在且非空"的 git 绝对路径。

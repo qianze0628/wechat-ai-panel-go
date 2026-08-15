@@ -24,17 +24,19 @@ func TestLatestGitPathPortable(t *testing.T) {
 	t.Logf("latestGitPath() = %s", git)
 }
 
-// TestWhich2OrFallback: which2Or 找不到时回退裸名, 找到时返回绝对路径
-func TestWhich2OrFallback(t *testing.T) {
-	if p := which2Or("__definitely_not_installed__"); p != "__definitely_not_installed__" {
-		t.Fatalf("which2Or 应回退裸名, 得到 %s", p)
+// TestWhich2OrNoBareNameFallback: which2Or 找不到时必须返回 ""（不得回退裸名 — 裸名必然
+// 重入 exec.Command 的 LookPath 进程 PATH 快照死结）。找到时返回绝对路径。
+func TestWhich2OrNoBareNameFallback(t *testing.T) {
+	if p := which2Or("__definitely_not_installed__"); p != "" {
+		t.Fatalf("which2Or 应返回空串 (禁用裸名回退), 得到 %s", p)
 	}
 	home, _ := os.UserHomeDir()
 	gitCand := filepath.Join(home, ".wechat-ai-panel", "git", "cmd", "git.exe")
 	if fi, err := os.Stat(gitCand); err == nil && !fi.IsDir() {
-		if p := which2Or("git"); p != gitCand {
-			// npm 等可能不同, 但 git 便携应在候选
-			t.Logf("which2Or(git) = %s (候选 %s)", p, gitCand)
+		p := which2Or("git")
+		if p == "" {
+			t.Fatalf("which2Or(git) 不应为空 — 便携 git 应在候选目录命中")
 		}
+		t.Logf("which2Or(git) = %s", p)
 	}
 }

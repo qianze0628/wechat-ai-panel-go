@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -307,8 +308,45 @@ func findAstrbotExe() string {
 	return which("astrbot")
 }
 
-// which PATH 查找
+// which 查找可执行文件: 候选目录优先 + 注册表 PATH 刷新回退。
+// 修复 (2026-08-15 对抗式审查 critical): 原 exec.LookPath 用面板进程 PATH 快照,
+// 便携 node (装到 ~/.wechat-ai-panel/nodejs, 不进系统 PATH) 装完后 startWechat/startQr
+// 必报 "node 未安装" / "executable file not found"。与 api 包 which2 同方案:
+// ① 候选目录直接 os.Stat ② Windows 注册表 PATH 刷新后手工查 (.exe/.cmd/.bat)。
 func which(name string) string {
+	home, _ := os.UserHomeDir()
+	ext := ".exe"
+	if name == "npm" {
+		ext = ".cmd" // 便携 node 无 npm.exe
+	}
+	// 面板自管理便携工具目录 + 用户级安装目录
+	dirs := []string{
+		filepath.Join(home, ".wechat-ai-panel", "nodejs"),
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "AppData", "Roaming", "uv", "bin"),
+	}
+	for _, d := range dirs {
+		for _, e := range []string{ext, ".exe", ".cmd"} {
+			c := filepath.Join(d, name+e)
+			if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				return c
+			}
+		}
+	}
+	// astrbot: uv tools 固定路径优先 (与 api 包一致)
+	if name == "astrbot" {
+		c := filepath.Join(home, `AppData\Roaming\uv\tools\astrbot\Scripts\astrbot.exe`)
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	// 注册表 PATH 刷新后查 (进程 PATH 是启动快照, 新装工具不在)
+	if runtime.GOOS == "windows" {
+		if p := lookupWithSystemPath(name); p != "" {
+			return p
+		}
+	}
+	// 最后: 原 LookPath (系统 PATH 场景)
 	p, err := exec.LookPath(name)
 	if err != nil {
 		return ""
@@ -355,3 +393,30 @@ func HTTPOK(url string, timeout time.Duration) bool {
 }
 
 // (end)
+
+// lookupWithSystemPath 用注册表最新 PATH 手工查可执行文件 (绕过进程 PATH 快照)。
+// Windows: 读注册表 System/User PATH 合并, 查 .exe/.cmd/.bat; 非 Windows 直接查进程 PATH。
+func lookupWithSystemPath(name string) string {
+	var sysPath string
+	if runtime.GOOS == "windows" {
+		sysPath = registrySystemPath()
+	} else {
+		sysPath = os.Getenv("PATH")
+	}
+	if sysPath == "" {
+		return ""
+	}
+	exts := []string{".exe", ".cmd", ".bat"}
+	for _, d := range strings.Split(sysPath, string(os.PathListSeparator)) {
+		if d == "" {
+			continue
+		}
+		for _, e := range exts {
+			c := filepath.Join(d, name+e)
+			if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				return c
+			}
+		}
+	}
+	return ""
+}

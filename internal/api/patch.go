@@ -7,6 +7,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -225,14 +226,21 @@ func astrbotSitePackages() string {
 
 // pythonProbe 用 python -c 定位 astrbot 包路径 (兼容 win/linux/mac)
 func pythonProbe() (string, error) {
+	// 修复 (2026-08-15 对抗式审查 中): 原无 Env/超时 — 中文用户名 (zh-CN=GBK/cp936) 时
+	// python 输出被 GBK 编码, Go 按 UTF-8 拼接路径必失败 → 补丁静默不恢复。
+	// ① 强制 PYTHONIOENCODING=utf-8 ② 30s 超时防挂起。
+	probeEnv := append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	for _, py := range []string{which2("python"), which2("python3"), which2("uv")} {
 		if py == "" {
 			continue
 		}
 		// uv run python -c 更慢, 优先直接 python
-		cmd := exec.Command(py, "-c",
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, py, "-c",
 			"import astrbot, os; print(os.path.dirname(astrbot.__file__))")
+		cmd.Env = probeEnv
 		out, err := cmd.Output()
+		cancel()
 		if err == nil {
 			dir := strings.TrimSpace(string(out))
 			if dir != "" {
