@@ -21,22 +21,22 @@ import (
 
 // MarketPlugin 市场插件定义
 type MarketPlugin struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Repo            string   `json:"repo"`
-	Desc            string   `json:"desc"`
-	Version         string   `json:"version"`
-	Author          string   `json:"author"`
-	Tags            []string `json:"tags"`
-	Installed       bool     `json:"installed"`
-	LocalVer        string   `json:"local_version"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Repo      string   `json:"repo"`
+	Desc      string   `json:"desc"`
+	Version   string   `json:"version"`
+	Author    string   `json:"author"`
+	Tags      []string `json:"tags"`
+	Installed bool     `json:"installed"`
+	LocalVer  string   `json:"local_version"`
 	// AstrBot 商店增强字段 (对齐 AstrBot 市场页: 图标/Star/平台/更新时间/下载)
-	Logo            string   `json:"logo"`
-	Stars           int      `json:"stars"`
-	AstrbotVersion  string   `json:"astrbot_version"`
+	Logo             string   `json:"logo"`
+	Stars            int      `json:"stars"`
+	AstrbotVersion   string   `json:"astrbot_version"`
 	SupportPlatforms []string `json:"support_platforms"`
-	UpdatedAt       string   `json:"updated_at"`
-	DownloadURL     string   `json:"download_url"`
+	UpdatedAt        string   `json:"updated_at"`
+	DownloadURL      string   `json:"download_url"`
 }
 
 // 内置市场 (常用 AstrBot 插件; 后续可扩展为远程 index)
@@ -87,18 +87,18 @@ func fetchRemoteMarket() []MarketPlugin {
 		}
 		for id, raw := range storeMap {
 			var p struct {
-				DisplayName      string   `json:"display_name"`
-				Desc             string   `json:"desc"`
-				Author           string   `json:"author"`
-				Repo             string   `json:"repo"`
+				DisplayName      string          `json:"display_name"`
+				Desc             string          `json:"desc"`
+				Author           string          `json:"author"`
+				Repo             string          `json:"repo"`
 				Tags             json.RawMessage `json:"tags"`
-				Version          string   `json:"version"`
-				Logo             string   `json:"logo"`
-				Stars            int      `json:"stars"`
-				AstrbotVersion   string   `json:"astrbot_version"`
-				SupportPlatforms []string `json:"support_platforms"`
-				UpdatedAt        string   `json:"updated_at"`
-				DownloadURL      string   `json:"download_url"`
+				Version          string          `json:"version"`
+				Logo             string          `json:"logo"`
+				Stars            int             `json:"stars"`
+				AstrbotVersion   string          `json:"astrbot_version"`
+				SupportPlatforms []string        `json:"support_platforms"`
+				UpdatedAt        string          `json:"updated_at"`
+				DownloadURL      string          `json:"download_url"`
 			}
 			if err := json.Unmarshal(raw, &p); err != nil {
 				continue
@@ -121,19 +121,19 @@ func fetchRemoteMarket() []MarketPlugin {
 				}
 			}
 			m := MarketPlugin{
-				ID:              id,
-				Name:            name,
-				Repo:            p.Repo,
-				Desc:            p.Desc,
-				Author:          p.Author,
-				Version:         p.Version,
-				Tags:            tags,
-				Logo:            p.Logo,
-				Stars:           p.Stars,
-				AstrbotVersion:  p.AstrbotVersion,
+				ID:               id,
+				Name:             name,
+				Repo:             p.Repo,
+				Desc:             p.Desc,
+				Author:           p.Author,
+				Version:          p.Version,
+				Tags:             tags,
+				Logo:             p.Logo,
+				Stars:            p.Stars,
+				AstrbotVersion:   p.AstrbotVersion,
 				SupportPlatforms: p.SupportPlatforms,
-				UpdatedAt:       p.UpdatedAt,
-				DownloadURL:     p.DownloadURL,
+				UpdatedAt:        p.UpdatedAt,
+				DownloadURL:      p.DownloadURL,
 			}
 			fetched = append(fetched, m)
 		}
@@ -332,7 +332,10 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 405, "仅支持 POST")
 			return
 		}
-		var body struct{ ID string `json:"id"`; Repo string `json:"repo"` }
+		var body struct {
+			ID   string `json:"id"`
+			Repo string `json:"repo"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.ID == "" && body.Repo == "") {
 			jsonErr(w, 400, "需指定 id 或 repo")
 			return
@@ -432,7 +435,9 @@ func (h *Handler) RegisterPluginMarket(cfg *config.Config) {
 			jsonErr(w, 405, "仅支持 POST")
 			return
 		}
-		var body struct{ ID string `json:"id"` }
+		var body struct {
+			ID string `json:"id"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
 			jsonErr(w, 400, "需指定 id")
 			return
@@ -479,6 +484,8 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 	// git clone 超时 120s (防挂起)
 	// 修复 (2026-08-11 agent 审查 P0-5): exec.CommandContext 用 os.Environ (进程 PATH 快照),
 	// 不含便携 git 目录 → 全新电脑 clone 必失败。前置检查 + 注入刷新后的 PATH。
+	// 修复 (2026-08-15): LookPath 只解析面板进程 PATH 快照, cmd.Env 的 PATH 对 LookPath 无效
+	// → 便携 git 就绪但 "git" 裸名仍报 executable file not found。命令名改用 which2 绝对路径。
 	gitPath := which2("git")
 	if gitPath == "" {
 		return fmt.Errorf("git 命令不可用 (环境未安装 git 或便携版未生效)。请先在「环境」步骤安装 git")
@@ -486,12 +493,12 @@ func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 	cloneEnv := append(os.Environ(), "PATH="+refreshSystemPath())
 	cloneCtx, cancelClone := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancelClone()
-	cmd := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", cloneURL, pdir)
+	cmd := exec.CommandContext(cloneCtx, gitPath, "clone", "--depth", "1", cloneURL, pdir)
 	cmd.Env = cloneEnv
 	if out, err := cmd.CombinedOutput(); err != nil {
-		// 若镜像失败回退直连 (清残留再试)
+		// 若镜像失败回退直连 (清残留再试; 同一 gitPath 快照, 避免二次解析漂移)
 		_ = os.RemoveAll(pdir)
-		cmd2 := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", repo, pdir)
+		cmd2 := exec.CommandContext(cloneCtx, gitPath, "clone", "--depth", "1", repo, pdir)
 		cmd2.Env = cloneEnv
 		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 			return fmt.Errorf("clone 失败: %s / %s", out, out2)

@@ -3,6 +3,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,19 +61,19 @@ type StageState struct {
 // InstallState 安装状态 (单例)
 type InstallState struct {
 	mu       sync.Mutex
-	Running  bool     `json:"running"`
-	Logs     []string `json:"logs"`
-	Done     bool     `json:"done"`
-	OK       *bool    `json:"ok"`
-	Platform string   `json:"platform"`
+	Running  bool           `json:"running"`
+	Logs     []string       `json:"logs"`
+	Done     bool           `json:"done"`
+	OK       *bool          `json:"ok"`
+	Platform string         `json:"platform"`
 	Where    map[string]any `json:"install_where"`
 	// 结构化进度 (v0.1.6+)
-	Stage      string `json:"stage"`       // 当前阶段 id
-	StageLabel string `json:"stage_label"` // 当前阶段名
-	Overall    int    `json:"overall"`     // 总进度 0-100
-	Stages     []StageState `json:"stages"` // 各阶段状态
-	NeedManual bool   `json:"need_manual"` // 是否等待用户手动操作
-	ManualHint string `json:"manual_hint"` // 手动操作指引 (中文)
+	Stage      string       `json:"stage"`       // 当前阶段 id
+	StageLabel string       `json:"stage_label"` // 当前阶段名
+	Overall    int          `json:"overall"`     // 总进度 0-100
+	Stages     []StageState `json:"stages"`      // 各阶段状态
+	NeedManual bool         `json:"need_manual"` // 是否等待用户手动操作
+	ManualHint string       `json:"manual_hint"` // 手动操作指引 (中文)
 }
 
 var installState = &InstallState{OK: nil, Stages: []StageState{}}
@@ -592,9 +593,12 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	if cloneTask != nil {
 		// 前置检查 (2026-08-11): git 不可用时报明确中文错误, 避免"git not found"模糊失败
 		// (便携 MinGit 安装后 which2 检测不到 → 之前误报"环境就绪"但 clone 却失败)
-		if which2("git") == "" {
-			addLog("[clone] [error] git 命令不可用 (环境检测失败)。请先在「环境」步骤安装 git 或手动安装: https://git-scm.com/downloads")
-			stageDone("clone", "git 不可用", "git 命令不存在, 无法 clone")
+		// (2026-08-15): 升级为 latestGitPath + 真实执行自检 — which2 判"就绪"但二进制损坏时
+		// 直接裸名/残缺文件跑 clone 会得到模糊的 "executable file not found" 错误。
+		if !selfCheckGit() {
+			gitNow := latestGitPath()
+			addLog("[clone] [error] git 命令不可用或不可执行 (解析路径: " + gitNow + ")。请先在「环境」步骤安装 git 或手动安装: https://git-scm.com/downloads")
+			stageDone("clone", "git 不可用", "git 命令不存在或不可执行, 无法 clone")
 			installState.mu.Lock()
 			installState.NeedManual = true
 			installState.ManualHint = "git 不可用 (便携安装后检测失败)。\n手动方案: ① 到 https://git-scm.com/downloads 安装 Git;\n② 或用浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP, 解压后重命名为 wechat-bot-windows 放到本程序目录"
@@ -647,7 +651,10 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			addLog("[clone] [info] 尝试镜像: " + proxied)
 			_ = os.RemoveAll(wechatDir)
 			_ = os.MkdirAll(wechatDir, 0o755)
-			cmd := exec.Command("git", "clone", "--depth", "1", proxied, wechatDir)
+			// 修复 (2026-08-15): exec.Command 的 LookPath 只解析面板进程 PATH 快照,
+			// cmd.Env 注入的 PATH 对 LookPath 无效 → 便携 git 已就绪但 clone 报 "executable file not found in %PATH%"。
+			// 改用绝对路径 (latestGitPath: which2 优先, 便携目录兜底), 空时兜底 "git"。
+			cmd := exec.Command(latestGitPath(), "clone", "--depth", "1", proxied, wechatDir)
 			var ok2 bool
 			ok2, cloneErr = runCmd(cmd, 240*time.Second)
 			if ok2 {
@@ -660,7 +667,7 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		if !cloneOK {
 			_ = os.RemoveAll(wechatDir)
 			_ = os.MkdirAll(wechatDir, 0o755)
-			cmd := exec.Command("git", "clone", "--depth", "1", repo, wechatDir)
+			cmd := exec.Command(latestGitPath(), "clone", "--depth", "1", repo, wechatDir)
 			ok2, errMsg := runCmd(cmd, 240*time.Second)
 			if ok2 {
 				cloneOK = true
@@ -708,7 +715,10 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 		if mirrorNpmRegistry != "" {
 			args = append(args, "--registry="+mirrorNpmRegistry)
 		}
-		cmd := exec.Command("npm", args...)
+		// 修复 (2026-08-15): npm 同 git — LookPath 不认 cmd.Env 的 PATH, 便携 node 的 npm.cmd
+		// (which2 候选目录可找, 但进程 PATH 快照没有) → 用 which2 绝对路径; Go 1.19+ 可直接
+		// exec .cmd 脚本 (CreateProcess 解析 .cmd 包装), 已实测本机可行, 故无需 cmd /c 包装。
+		cmd := exec.Command(which2Or("npm"), args...)
 		cmd.Dir = wechatDir
 		ok2, errMsg := runCmd(cmd, 600*time.Second)
 		if !ok2 {
@@ -730,7 +740,7 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	setStage("astrbot", "安装 AstrBot", 0)
 	if which2("astrbot") == "" {
 		addLog("[astrbot] [start] uv tool install astrbot")
-		cmd := exec.Command("uv", "tool", "install", "astrbot")
+		cmd := exec.Command(which2Or("uv"), "tool", "install", "astrbot")
 		ok2, errMsg := runCmd(cmd, 900*time.Second)
 		if !ok2 {
 			stageDone("astrbot", "AstrBot 安装失败", errMsg)
@@ -787,6 +797,53 @@ func findTask(tasks []map[string]string, kind string) map[string]string {
 		}
 	}
 	return nil
+}
+
+// gitBin 便携 MinGit 的绝对路径 (which2 候选目录判定其一, 不依赖进程 PATH 快照)
+var gitBin = filepath.Join(func() string { h, _ := os.UserHomeDir(); return h }(),
+	".wechat-ai-panel", "git", "cmd", "git.exe")
+
+// which2Or 取可执行文件的绝对路径 (which2 候选目录优先), 找不到时回退到命令行名字。
+// 修复 (2026-08-15): exec.Command 的 LookPath 只解析面板进程 PATH 快照, cmd.Env 注入的
+// PATH 对 LookPath 无效 → 便携工具 (git/npm 等) 虽被 which2 找到, 但 exec.Command(name)
+// 仍报 "executable file not found in %PATH%"。安装类调用全部改用绝对路径, 空时兜底原名字。
+func which2Or(name string) string {
+	if p := which2(name); p != "" {
+		return p
+	}
+	return name
+}
+
+// latestGitPath 返回校验"文件真实存在且非空"的 git 绝对路径。
+// 优先级: which2 结果 (含便携/系统目录) → 便携 MinGit 兜底 → 裸名 "git" (系统 PATH)。
+// 修复 (2026-08-15): 曾出现便携 git 解压损坏/旧版镜像 URL 留下残缺文件 → which2 判"就绪"
+// 但 clone 必失败的隐蔽场景; 此处剔除空/目录等明显坏文件后才返回。
+func latestGitPath() string {
+	for _, c := range []string{which2("git"), gitBin} {
+		if c == "" {
+			continue
+		}
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return c
+		}
+	}
+	return "git"
+}
+
+// selfCheckGit 真实验证 latestGitPath 解析出的 git 可执行 (跑一次 --version)。
+// 修复 (2026-08-15): which2 判"就绪"但二进制损坏/不可执行时, clone 仍会失败且错误信息
+// 模糊 ("executable file not found") — 前置自检让日志/错误可读, 不中断安装流程。
+func selfCheckGit() bool {
+	bin := latestGitPath()
+	if bin == "" || bin == "git" {
+		return false // 裸名依赖系统 PATH, 无法预检
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, bin, "--version").Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 // fileExists 判断文件/目录是否存在
