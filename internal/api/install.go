@@ -154,15 +154,8 @@ func planInstallTasks(platform, wechatDir, astrbotRoot, wechatRepo string) []map
 			"kind":  "env_python", "target": "",
 		})
 	}
-	// git: 全新电脑常无 git → clone 阶段必失败。Windows 装便携 git (面板管理 PATH);
-	// 其他平台提示系统包管理器安装。
-	// 修复 (2026-08-10): 之前完全没检查 git。
-	if which2("git") == "" {
-		tasks = append(tasks, map[string]string{
-			"label": envInstallLabel(platform, "git"),
-			"kind":  "env_git", "target": "",
-		})
-	}
+	// git: 不再需要 (2026-08-15 第一性原理重构: 源码改为 HTTP zip 下载,
+	// 零外部二进制依赖; git 只用于 clone, 而"拉源码"不需要版本控制能力)。
 
 	// ---- 阶段 2: wechat-bot 源码 + 依赖 ----
 	pkg := filepath.Join(wechatDir, "package.json")
@@ -177,7 +170,7 @@ func planInstallTasks(platform, wechatDir, astrbotRoot, wechatRepo string) []map
 	} else {
 		if wechatRepo != "" {
 			tasks = append(tasks, map[string]string{
-				"label": "git clone " + wechatRepo + " → " + wechatDir,
+				"label": "下载 wechat-bot 源码 (zip) " + wechatRepo + " → " + wechatDir,
 				"kind":  "clone", "target": wechatDir, "repo": wechatRepo,
 			})
 		} else {
@@ -587,28 +580,13 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	stageDone("env", "环境工具链就绪", "")
 	addLog("[env] [done] 环境工具链就绪")
 
-	// ===== 阶段 2: clone wechat-bot 源码 =====
+	// ===== 阶段 2: 获取 wechat-bot 源码 (HTTP zip, 第一性原理: 不依赖 git 二进制) =====
 	setStage("clone", "拉取 wechat-bot 源码", 0)
 	cloneTask := findTask(tasks, "clone")
 	if cloneTask != nil {
-		// 前置检查 (2026-08-11): git 不可用时报明确中文错误, 避免"git not found"模糊失败
-		// (便携 MinGit 安装后 which2 检测不到 → 之前误报"环境就绪"但 clone 却失败)
-		// (2026-08-15): 升级为 latestGitPath + 真实执行自检 — which2 判"就绪"但二进制损坏时
-		// 直接裸名/残缺文件跑 clone 会得到模糊的 "executable file not found" 错误。
-		if !selfCheckGit() {
-			gitNow := latestGitPath()
-			addLog("[clone] [error] git 命令不可用或不可执行 (解析路径: " + gitNow + ")。请先在「环境」步骤安装 git 或手动安装: https://git-scm.com/downloads")
-			stageDone("clone", "git 不可用", "git 命令不存在或不可执行, 无法 clone")
-			installState.mu.Lock()
-			installState.NeedManual = true
-			installState.ManualHint = "git 不可用 (便携安装后检测失败)。\n手动方案: ① 到 https://git-scm.com/downloads 安装 Git;\n② 或用浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP, 解压后重命名为 wechat-bot-windows 放到本程序目录"
-			installState.mu.Unlock()
-			finishInstall(false)
-			return
-		}
 		addLog("[clone] [start] " + cloneTask["label"])
 		// 修复 (2026-08-12): 配置的 wechat_dir 指向不存在的盘符 (D:\wechat-bot-windows 且无 D 盘) 时,
-		// MkdirAll 失败被忽略 → git clone 到空路径也失败 → 安装卡死。改: 创建失败即回退可靠目录。
+		// MkdirAll 失败被忽略 → 下载到空路径也失败 → 安装卡死。改: 创建失败即回退可靠目录。
 		if wechatDir != "" && fileExists(wechatDir) {
 			// 已存在的目录 (半成品/已有源码) 直接用
 		} else {
@@ -628,72 +606,32 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			}
 		}
 		repo := cloneTask["repo"]
-		// 国内加速: 多级镜像候选自动回退 (修复 2026-08-10: 之前默认镜像为空 → 国内直连 github 必失败)
-		// 候选顺序: 用户配置镜像 → 内置公共镜像列表 → 直连
-		cloneOK := false
-		var cloneErr string
-		repoClean := strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
-		proxyCandidates := []string{}
+		// (2026-08-15 第一性原理重构): 放弃 git clone — 拉源码不需要 git 二进制,
+		// 直接 HTTP 下载 GitHub zip (镜像→直连多级回退, 全程 Go 标准库, 零外部依赖)。
+		// 用户配置的 git_clone_proxy 作为额外镜像前缀沿用 (兼容旧配置)。
+		zipProxies := []string{}
 		if mirrorGitCloneProxy != "" {
-			proxyCandidates = append(proxyCandidates, mirrorGitCloneProxy)
+			zipProxies = append(zipProxies, mirrorGitCloneProxy)
 		}
-		proxyCandidates = append(proxyCandidates,
-			"https://gh-proxy.com/",
-			"https://ghfast.top/",
-			"https://ghproxy.net/",
-			"https://mirror.ghproxy.com/",
-		)
-		for _, proxy := range proxyCandidates {
-			if cloneOK {
-				break
-			}
-			proxied := strings.TrimSuffix(proxy, "/") + "/" + repoClean
-			addLog("[clone] [info] 尝试镜像: " + proxied)
-			_ = os.RemoveAll(wechatDir)
-			_ = os.MkdirAll(wechatDir, 0o755)
-			// 修复 (2026-08-15): exec.Command 的 LookPath 只解析面板进程 PATH 快照,
-			// cmd.Env 注入的 PATH 对 LookPath 无效 → 便携 git 已就绪但 clone 报 "executable file not found in %PATH%"。
-			// 改用绝对路径 (latestGitPath: which2 优先, 便携目录兜底), 空时兜底 "git"。
-			cmd := exec.Command(latestGitPath(), "clone", "--depth", "1", proxied, wechatDir)
-			var ok2 bool
-			ok2, cloneErr = runCmd(cmd, 240*time.Second)
-			if ok2 {
-				cloneOK = true
-				cloneErr = ""
-			} else {
-				addLog("[clone] [warn] 镜像失败: " + cloneErr)
-			}
-		}
+		cloneOK, cloneErr := fetchRepoZip(repo, wechatDir, zipProxies, func(format string, args ...any) {
+			addLog("[clone] " + fmt.Sprintf(format, args...))
+		})
 		if !cloneOK {
-			_ = os.RemoveAll(wechatDir)
-			_ = os.MkdirAll(wechatDir, 0o755)
-			cmd := exec.Command(latestGitPath(), "clone", "--depth", "1", repo, wechatDir)
-			ok2, errMsg := runCmd(cmd, 240*time.Second)
-			if ok2 {
-				cloneOK = true
-				cloneErr = ""
-			} else {
-				cloneErr = errMsg
-			}
-		}
-		if !cloneOK {
-			stageDone("clone", "git clone 失败", cloneErr)
+			stageDone("clone", "源码下载失败", cloneErr)
 			installState.mu.Lock()
 			installState.NeedManual = true
-			installState.ManualHint = "git clone 失败: " + cloneErr +
-				"\n已尝试国内镜像 (gh-proxy/ghfast 等) 与直连均失败, 请检查网络或稍后重试。" +
-				"\n手动方案: ① 若未装 git, 到 https://git-scm.com/downloads 下载安装;" +
-				"\n② 用浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP," +
-				"解压后把文件夹重命名为 wechat-bot-windows 放到本程序目录下, 再点\"重新检测\""
+			installState.ManualHint = "源码下载失败: " + cloneErr +
+				"\n已尝试内置镜像 (gh-proxy/ghfast 等) 与 GitHub 直连, 请检查网络或稍后重试。" +
+				"\n手动方案: ① 在浏览器打开 https://github.com/qianze0628/wechat-bot-optimized 点 Code → Download ZIP;" +
+				"\n② 解压后把文件夹重命名为 wechat-bot-windows 放到本程序目录下, 再点\"重新检测\""
 			installState.mu.Unlock()
 			finishInstall(false)
 			return
 		}
-		// 修复 (2026-08-10): clone 成功后必须校验 package.json 存在, 否则半成品目录
-		// (超时被杀/网络中断留下 .git 无源码) 会让后续 npm 阶段静默跳过 → 安装"成功"但 bot 不可用
+		// 下载成功后必须校验 package.json 存在, 否则半成品目录会让后续 npm 阶段静默跳过
 		if !fileExists(filepath.Join(wechatDir, "package.json")) {
 			_ = os.RemoveAll(wechatDir)
-			stageDone("clone", "源码不完整 (无 package.json)", "clone 半成品, 已清理, 请重试")
+			stageDone("clone", "源码不完整 (无 package.json)", "下载半成品, 已清理, 请重试")
 			installState.mu.Lock()
 			installState.NeedManual = true
 			installState.ManualHint = "源码拉取不完整 (可能网络中断)。已清理半成品目录, 请重新点击安装重试。"
@@ -701,7 +639,7 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 			finishInstall(false)
 			return
 		}
-		addLog("[clone] [done] 源码已拉取")
+		addLog("[clone] [done] 源码下载完成")
 	}
 	stageDone("clone", "源码就绪", "")
 
@@ -781,16 +719,15 @@ func runInstall(tasks []map[string]string, platform, wechatDir, astrbotRoot stri
 	// ===== 阶段 5: 验证 =====
 	// 修复 (2026-08-10): 之前用 exec.LookPath (面板进程 PATH 快照) → 装好的工具全找不到 → 误报失败。
 	// 改用 which2 (含已知目录回退) + findAstrbotExePath (uv tools 目录回退)。
+	// (2026-08-15): git 不再纳入必需项 — 源码经 HTTP zip 获取, 无 git 也能完整部署。
 	setStage("verify", "验证", 0)
 	nodeV := which2("node")
 	uvPath := which2("uv")
-	gitPath := which2("git")
 	astrbotPath := findAstrbotExePath()
 	detail := "node=" + ternary(nodeV != "", "✓", "✗") +
 		" uv=" + ternary(uvPath != "", "✓", "✗") +
-		" git=" + ternary(gitPath != "", "✓", "✗") +
 		" astrbot=" + ternary(astrbotPath != "", "✓", "✗")
-	if nodeV != "" && uvPath != "" && gitPath != "" && astrbotPath != "" {
+	if nodeV != "" && uvPath != "" && astrbotPath != "" {
 		addLog("[verify] [done] " + detail)
 		stageDone("verify", detail, "")
 		ok = true

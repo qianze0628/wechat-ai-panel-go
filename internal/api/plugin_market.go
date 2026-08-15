@@ -469,41 +469,22 @@ func errFromCmd(err error, name string) error {
 	return fmt.Errorf("%s 失败: %v", name, err)
 }
 
-// installPluginFromRepo clone + 依赖安装
+// installPluginFromRepo 获取插件源码 + 依赖安装
+// (2026-08-15 第一性原理重构): git clone → HTTP zip 下载 (零外部二进制依赖, 与一键部署同源)。
 func installPluginFromRepo(cfg *config.Config, pdir, repo string) error {
 	_ = os.MkdirAll(pluginsDir(cfg), 0o755)
-	// 重装/覆盖: 先清残留目录 (避免 git clone 到非空目录失败)
+	// 重装/覆盖: 先清残留目录
 	if _, err := os.Stat(pdir); err == nil {
 		_ = os.RemoveAll(pdir)
 	}
-	// git clone (depth 1; 镜像加速)
-	cloneURL := repo
+	// zip 下载 (用户配置的 git_clone_proxy 兼容沿用为镜像前缀)
+	zipProxies := []string{}
 	if cfg.Mirrors.GitCloneProxy != "" {
-		cloneURL = cfg.Mirrors.GitCloneProxy + strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
+		zipProxies = append(zipProxies, cfg.Mirrors.GitCloneProxy)
 	}
-	// git clone 超时 120s (防挂起)
-	// 修复 (2026-08-11 agent 审查 P0-5): exec.CommandContext 用 os.Environ (进程 PATH 快照),
-	// 不含便携 git 目录 → 全新电脑 clone 必失败。前置检查 + 注入刷新后的 PATH。
-	// 修复 (2026-08-15): LookPath 只解析面板进程 PATH 快照, cmd.Env 的 PATH 对 LookPath 无效
-	// → 便携 git 就绪但 "git" 裸名仍报 executable file not found。命令名改用 which2 绝对路径。
-	gitPath := which2("git")
-	if gitPath == "" {
-		return fmt.Errorf("git 命令不可用 (环境未安装 git 或便携版未生效)。请先在「环境」步骤安装 git")
-	}
-	cloneEnv := append(os.Environ(), "PATH="+refreshSystemPath())
-	cloneCtx, cancelClone := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancelClone()
-	cmd := exec.CommandContext(cloneCtx, gitPath, "clone", "--depth", "1", cloneURL, pdir)
-	cmd.Env = cloneEnv
-	if out, err := cmd.CombinedOutput(); err != nil {
-		// 若镜像失败回退直连 (清残留再试; 同一 gitPath 快照, 避免二次解析漂移)
-		_ = os.RemoveAll(pdir)
-		cmd2 := exec.CommandContext(cloneCtx, gitPath, "clone", "--depth", "1", repo, pdir)
-		cmd2.Env = cloneEnv
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			return fmt.Errorf("clone 失败: %s / %s", out, out2)
-		}
-		_ = out
+	ok, errMsg := fetchRepoZipWithMarker(repo, pdir, "", zipProxies, nil)
+	if !ok {
+		return fmt.Errorf("插件源码下载失败: %s", errMsg)
 	}
 	// requirements.txt 依赖安装: 用 astrbot 相同 Python 环境 (uv 装的), 超时 300s
 	req := filepath.Join(pdir, "requirements.txt")

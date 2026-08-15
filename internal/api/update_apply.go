@@ -85,9 +85,10 @@ func copyFile(src, dst string) error {
 	return cerr
 }
 
-// downloadFile 下载文件到本地 (支持 302 跟随 + 超时)
+// downloadFile 下载文件到本地 (支持 302 跟随 + 超时 + 环境/系统代理)
+// 修复 (2026-08-15): 统一用 newDownloadClient — 挂代理 (Clash 系统代理) 时也能走代理下载。
 func downloadFile(url, dest string) error {
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := newDownloadClient()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err

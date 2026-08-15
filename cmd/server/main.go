@@ -166,7 +166,9 @@ func main() {
 	// 更新检测 (GitHub latest + IP 判断国内镜像)
 	srv.RegisterUpdate()
 	// 面板内置自动更新 (下载→替换→重启)
-	api.SetVersionTag("v0.5.5")
+	// (2026-08-15): v0.6.0 — 一键部署零外部依赖: 源码 git clone → HTTP zip 下载,
+	// 移除 git 硬依赖 (朋友无开发环境电脑实测 "git not found" 死结); exec 全部绝对路径。
+	api.SetVersionTag("v0.6.0")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
