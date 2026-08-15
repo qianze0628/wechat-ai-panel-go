@@ -50,9 +50,11 @@ type DownloadInfo struct {
 	FinalURL     string `json:"final_url"`
 }
 
-// httpGetJSON GET JSON (带 User-Agent + 超时)
+// httpGetJSON GET JSON (带 User-Agent + 超时 + 代理感知)
+// 修复 (2026-08-15 v0.6.2): 使用 newDownloadClient (环境变量代理 + Windows 系统代理),
+// 用户挂 Clash 等代理时检查更新不再裸连 GitHub 超时。
 func httpGetJSON(url string, out any) error {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := newDownloadClient()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
@@ -79,14 +81,97 @@ func truncateBytes(b []byte, n int) string {
 	return s
 }
 
-// fetchLatestRelease 查 GitHub latest release
+// githubAPIMirrors GH API 代理候选中, 仅 gh-proxy.com 支持完整 API (实测 ghfast/ghproxy.net 403)。
+var githubAPIMirrors = []string{
+	"https://gh-proxy.com/https://api.github.com/",
+	"https://ghfast.top/https://api.github.com/",
+	"https://ghproxy.net/https://api.github.com/",
+	"https://mirror.ghproxy.com/https://api.github.com/",
+}
+
+// fetchLatestRelease 查 GitHub latest release, 多源回退:
+//   直连 api.github.com → gh-proxy 镜像 → release 页 302 解析 tag (最兜底)。
+// 修复 (2026-08-15 v0.6.2): 国内直连 api.github.com 频繁超时 → "检查更新请求超时"。
+// 改进: ① 不依赖 detectRegion (额外 IP 请求拖慢检查) — 所有地区统一"直连+镜像+重定向"候选;
+//       ② 单候选短超时 (12s), 失败立即换下一个, 不再被单一超时拖死。
 func fetchLatestRelease() (*ReleaseInfo, error) {
-	var rel ReleaseInfo
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GH)
-	if err := httpGetJSON(url, &rel); err != nil {
-		return nil, fmt.Errorf("请求 GitHub 失败: %v", err)
+	candidates := []string{fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GH)}
+	for _, m := range githubAPIMirrors {
+		candidates = append(candidates, m+fmt.Sprintf("repos/%s/releases/latest", GH))
 	}
-	return &rel, nil
+	// 逐个尝试 (每个候选短超时)
+	var lastErr error
+	found := false
+	for _, url := range candidates {
+		var rel ReleaseInfo
+		if err := httpGetJSONTimeout(url, &rel, 12*time.Second); err == nil && rel.TagName != "" {
+			return &rel, nil
+		} else if err != nil {
+			lastErr = err
+		}
+		_ = found
+	}
+	// 兜底方案: release 页面 302 → Location 提取 tag (国内可达性好, 仅版本号)
+	if rel, err := fetchLatestReleaseViaRedirect(); err == nil {
+		return rel, nil
+	}
+	return nil, fmt.Errorf("检查更新失败: %v", lastErr)
+}
+
+// httpGetJSONTimeout 带指定超时的 GET JSON (代理感知)
+func httpGetJSONTimeout(url string, out any, timeout time.Duration) error {
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: proxyFunc()}}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "wechat-ai-panel-updater")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateBytes(body, 200))
+	}
+	return json.Unmarshal(body, out)
+}
+
+// fetchLatestReleaseViaRedirect 通过 github.com/<repo>/releases/latest 的 302 Location 取 tag。
+// 该入口国内可达性好 (HTML 重定向而非 API), 即使 API 全挂也能拿到版本号。
+func fetchLatestReleaseViaRedirect() (*ReleaseInfo, error) {
+	client := newDownloadClient()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse // 不跟随, 取 302 Location
+	}
+	url := fmt.Sprintf("https://github.com/%s/releases/latest", GH)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "wechat-ai-panel-updater")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	// 302 → Location: https://github.com/.../releases/tag/v0.6.1
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if idx := strings.LastIndex(loc, "/"); idx >= 0 {
+				tag := loc[idx+1:]
+				tag = strings.TrimSpace(tag)
+				if strings.HasPrefix(tag, "v") {
+					return &ReleaseInfo{TagName: tag}, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("release 重定向缺少 Location (HTTP %d)", resp.StatusCode)
+	}
+	// 部分网络下直接 200 返回页面 → 尝试从 HTML 提取 version (失败也接受, 交给上层)
+	return nil, fmt.Errorf("release 页面未重定向 (HTTP %d)", resp.StatusCode)
 }
 
 // versionIsNewer 语义版本比较 (v0.1.9 vs v0.2.0; 容忍 go-v0.2 这类前缀)

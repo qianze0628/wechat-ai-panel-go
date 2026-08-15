@@ -241,17 +241,30 @@ func (c *Config) Load(baseDir string) error {
 	c.AstrbotDataDir = resolve(c.AstrbotDataDir)
 	c.QrServerScript = resolve(c.QrServerScript)
 	c.Astrbot.CmdConfig = resolve(c.Astrbot.CmdConfig)
-	// (2026-08-15 v0.6.1 第一性原理修复): 配置的 cmd_config 指向不存在的文件时,
-	// 自动回退到 AstrBot 权威位置 <astrbot_root>/data/cmd_config.json。
-	// 旧版相对路径 "cmd_config.json" 会解析到 baseDir 下 (如 D:\cmd_config.json),
-	// 与 AstrBot 实际读写位置不一致 → 一键配置 OneBot 报 "cmd_config.json 不存在"。
+
+	// ==== cmd_config 路径规范 (v0.6.1, 根治全新电脑 OneBot 配置报错) ====
+	// 背景: AstrBot 的 cmd_config 权威位置 = get_astrbot_data_path()/cmd_config.json
+	//   = <astrbot_root>/data/cmd_config.json (astrbot_path.py: ASTRBOT_CONFIG_PATH;
+	//   run 时 cwd=root, get_astrbot_root() = cwd 或 ASTRBOT_ROOT 环境变量)。
+	// 面板必须以 astrbot_data_dir 为基准解析 cmd_config, 绝不基于程序目录 baseDir:
+	// 旧实现裸名 "cmd_config.json" 走通用 resolve → filepath.Join(baseDir, x),
+	// 面板装在 D 盘驱动相对目录时 (baseDir == "D:") 会得到 D:cmd_config.json,
+	// 与 AstrBot 真实位置不一致 → "一键配置 OneBot" 报 "cmd_config.json 不存在"。
+	// (1) data_dir 权威化: 未配置或停留在默认 ".astrbot-data" 时, 对齐 AstrBot 真实
+	//     数据目录 <root>/data, 否则插件/知识库/cmd_config 会落到 AstrBot 不读的位置。
 	if c.AstrbotRoot != "" {
-		// 权威位置 (AstrBot 固定读写点)
-		authoritative := filepath.Join(c.AstrbotRoot, "data", "cmd_config.json")
-		if c.Astrbot.CmdConfig == "" {
+		rootData := filepath.Join(c.AstrbotRoot, "data")
+		if c.AstrbotDataDir == "" || c.AstrbotDataDir == resolve(Default().AstrbotDataDir) {
+			c.AstrbotDataDir = rootData
+		}
+	}
+	// (2) cmd_config 一律基于 astrbot_data_dir: 为空 / 相对 / 指向不存在文件 → 权威化。
+	if c.AstrbotDataDir != "" {
+		authoritative := filepath.Join(c.AstrbotDataDir, "cmd_config.json")
+		if c.Astrbot.CmdConfig == "" || !filepath.IsAbs(c.Astrbot.CmdConfig) {
 			c.Astrbot.CmdConfig = authoritative
 		} else if _, err := os.Stat(c.Astrbot.CmdConfig); err != nil {
-			// 配置路径不存在 → 回退权威位置 (不存在也算, 由 setup 自动生成)
+			// 配置路径不存在 (如旧版误解析出的 D:\cmd_config.json) → 回退权威位置
 			c.Astrbot.CmdConfig = authoritative
 		}
 	}
@@ -272,10 +285,10 @@ func (c *Config) Load(baseDir string) error {
 
 // EffectiveCmdConfig 返回实际生效的 AstrBot cmd_config.json 路径。
 // 第一性原理 (2026-08-15 v0.6.1): AstrBot 的 cmd_config 权威位置固定在
-//   <astrbot_root>/data/cmd_config.json (astrbot_path.py: ASTRBOT_CONFIG_PATH =
-//   get_astrbot_data_path()/cmd_config.json = <root>/data/cmd_config.json)。
-// 用户配置里写的 cmd_config (如相对路径解析到 D:\cmd_config.json) 与 AstrBot 真实位置
-// 不一致时, 必须回退到权威位置, 否则面板读写"不存在"的文件 → 一键配置 OneBot 报 404。
+//   get_astrbot_data_path()/cmd_config.json (astrbot_path.py: ASTRBOT_CONFIG_PATH)。
+// 面板侧 Load() 已把 CmdConfig 归一化到 <astrbot_data_dir>/cmd_config.json;
+// 本函数作最后一层兜底: 配置路径异常时仍回退到权威位置, 保证面板读写与
+// AstrBot 实际读写一致 → 一键配置 OneBot 不报 "cmd_config.json 不存在"。
 func (c *Config) EffectiveCmdConfig() string {
 	cfg := c.Astrbot.CmdConfig
 	if cfg != "" {
@@ -283,14 +296,21 @@ func (c *Config) EffectiveCmdConfig() string {
 			return cfg // 配置路径真实存在 → 用它
 		}
 	}
-	// 回退: AstrBot 权威位置 <root>/data/cmd_config.json
-	if c.AstrbotRoot != "" {
-		cand := filepath.Join(c.AstrbotRoot, "data", "cmd_config.json")
+	// 回退: 权威位置 = <astrbot_data_dir|astrbot_root>/data/cmd_config.json
+	for _, base := range []string{c.AstrbotDataDir, filepath.Join(c.AstrbotRoot, "data")} {
+		if base == "" {
+			continue
+		}
+		if strings.HasSuffix(base, "data") && base == filepath.Join(c.AstrbotRoot, "data") && c.AstrbotDataDir != "" && c.AstrbotDataDir != base {
+			// 跳过与 data_dir 重复的 root/data (避免两次 stat)
+		}
+		cand := filepath.Join(base, "cmd_config.json")
 		if _, err := os.Stat(cand); err == nil {
 			return cand
 		}
-		// 权威路径目录存在但文件尚未生成 (首次运行前) → 仍返回权威位置, 由调用方生成
-		if _, err := os.Stat(filepath.Join(c.AstrbotRoot, "data")); err == nil {
+		// 权威目录存在但文件尚未生成 (AstrBot 首次启动时自动生成) → 仍返回权威位置,
+		// 由调用方 (ensureCmdConfigExists / setup) 负责生成; 避免面板指向"不存在"而误报。
+		if _, err := os.Stat(base); err == nil {
 			return cand
 		}
 	}

@@ -171,7 +171,10 @@ func main() {
 	// (2026-08-15): v0.6.1 — AstrBot 一键可用: 启动前自动 astrbot init (root 未初始化死结);
 	// cmd_config 权威路径回退 <root>/data/cmd_config.json (配置路径不存在不再 404);
 	// 一键配置自动生成最小 cmd_config; 前端不再要求系统 Python (uv 自管理)。
-	api.SetVersionTag("v0.6.1")
+	// (2026-08-15): v0.6.2 — 环境检查根治 (statusFn which 弃用进程 PATH 快照, 与安装同标准);
+	// 首次登录不再误报"已修改密码" (password_change_required 语义 + 从启动日志提取初始密码);
+	// 检查更新多源回退 (直连→gh-proxy 镜像→release 302 解析), 单候选 12s 短超时防卡死。
+	api.SetVersionTag("v0.6.2")
 	srv.RegisterUpdateApply()
 	// 服务守护: 启动自动拉起 + 每 30s 健康检查掉线自动恢复
 	// (电脑重启后打开面板即全链路恢复, 无需手动逐个启动)
@@ -295,13 +298,70 @@ func serviceStatus(cfg *config.Config) map[string]any {
 	}
 }
 
-// which 返回可执行文件路径 (PATH 查找)
+// which 返回可执行文件路径: 候选目录优先 + 注册表 PATH 刷新回退。
+// 第一性原理修复 (2026-08-15 v0.6.2): 原 exec.LookPath 用面板进程 PATH 快照 —
+// 便携工具 (node/npm/uv 装到 ~/.wechat-ai-panel、~/.local/bin, 不进系统 PATH) 检测不到,
+// 导致"安装成功但 /api/status 环境检查显示缺失" (前端 envReady=false)。
+// 与 api 包 which2 同方案: ① 候选目录直接 os.Stat ② 注册表 PATH 刷新后手工查。
 func which(name string) string {
+	home, _ := os.UserHomeDir()
+	ext := ".exe"
+	if name == "npm" {
+		ext = ".cmd" // 便携 node 无 npm.exe
+	}
+	// 候选目录: 便携工具 + 用户级安装 + 标准系统安装
+	dirs := []string{
+		filepath.Join(home, ".wechat-ai-panel", "nodejs"),   // 便携 node (面板管理)
+		filepath.Join(home, ".local", "bin"),                 // uv/便携工具
+		filepath.Join(home, "AppData", "Roaming", "uv", "bin"),
+		filepath.Join(home, "AppData", "Roaming", "uv"),
+		`C:\Program Files\nodejs`,                            // 系统 node
+		`C:\Program Files\Git\cmd`,                           // 系统 git
+	}
+	for _, d := range dirs {
+		for _, e2 := range []string{ext, ".exe", ".cmd"} {
+			c := filepath.Join(d, name+e2)
+			if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				return c
+			}
+		}
+	}
+	// 注册表 PATH 刷新后查 (进程 PATH 是启动快照, 新装工具不在)
+	if runtime.GOOS == "windows" {
+		if p := lookupWithRegPath(name); p != "" {
+			return p
+		}
+	}
+	// 最后: 原 LookPath (系统 PATH 场景)
 	p, err := exec.LookPath(name)
 	if err != nil {
 		return ""
 	}
 	return p
+}
+
+// lookupWithRegPath 用注册表最新 PATH 手工查找 (Windows)
+func lookupWithRegPath(name string) string {
+	sysPath := refreshSystemPathFromRegistry()
+	if sysPath == "" {
+		return ""
+	}
+	exts := []string{".exe", ".cmd", ".bat"}
+	if name == "npm" {
+		exts = []string{".cmd", ".exe", ""}
+	}
+	for _, d := range filepath.SplitList(sysPath) {
+		if d == "" {
+			continue
+		}
+		for _, ext := range exts {
+			cand := filepath.Join(d, name+ext)
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				return cand
+			}
+		}
+	}
+	return ""
 }
 
 // findAstrbotExe 查找 astrbot 可执行 (uv tools → PATH)

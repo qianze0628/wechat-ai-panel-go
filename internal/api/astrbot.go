@@ -439,8 +439,14 @@ func AstrbotConfigured(cfg *config.Config) bool {
 }
 
 // ExtractCreds 提取 AstrBot 凭据 (与 Python 一致)
+// (2026-08-15 v0.6.2 第一性原理修复 x2):
+//  1. "password_storage_upgraded" 是 AstrBot 首次部署生成初始密码即置 true (存储升级标志),
+//     不等于"用户已修改密码" → 之前首次登录误判"已改密"。
+//     正确语义: password_change_required=true = 初始密码仍未修改 (首次登录), false=已修改。
+//  2. AstrBot 初始密码是随机生成并打印在**启动日志** (config 中只有哈希) —
+//     面板从 astrbot_boot.log 提取明文初始密码, 让用户无需翻日志即可登录。
 func ExtractCreds(cfg *config.Config) map[string]any {
-	out := map[string]any{"username": nil, "password": nil, "source": nil, "password_changed": false}
+	out := map[string]any{"username": nil, "password": nil, "source": nil, "password_changed": false, "first_login": false}
 	m, err := util.ReadJSONFile(cfg.Astrbot.CmdConfig)
 	if err != nil {
 		return out
@@ -452,16 +458,95 @@ func ExtractCreds(cfg *config.Config) map[string]any {
 	if u, ok := dash["username"].(string); ok && u != "" {
 		out["username"] = u
 	}
-	if upgraded, _ := dash["password_storage_upgraded"].(bool); upgraded {
-		out["password_changed"] = true
-		out["source"] = "cmd_config"
+	isFirstLogin := false
+	if v, ok := dash["password_change_required"].(bool); ok && v {
+		isFirstLogin = true
+	}
+	upgraded, _ := dash["password_storage_upgraded"].(bool)
+	pwdFromConfig, _ := dash["password"].(string) // md5 哈希 (非明文, 仅供历史兼容)
+	if isFirstLogin {
+		// 首次部署: 尝试从 AstrBot 启动日志提取明文初始密码
+		out["first_login"] = true
+		if p := extractInitialPasswordFromLog(cfg); p != "" {
+			out["password"] = p
+			out["source"] = "astrbot 启动日志 (初始密码)"
+		} else if pwdFromConfig != "" {
+			out["password"] = pwdFromConfig
+			out["source"] = "cmd_config (哈希, 建议查看日志)"
+		} else {
+			out["password"] = nil
+			out["source"] = "无明文, 见 AstrBot 启动日志/WebUI 设置-账号"
+		}
+		out["password_changed"] = false
 		return out
 	}
-	if p, ok := dash["password"].(string); ok && p != "" {
+	if upgraded {
+		// 已改密 (AstrBot 设 password_change_required=false)
+		out["password_changed"] = true
+		out["first_login"] = false
+		if pwdFromConfig != "" && !strings.HasPrefix(pwdFromConfig, "$") {
+			out["password"] = pwdFromConfig
+		}
+		return out
+	}
+	if p := pwdFromConfig; p != "" {
 		out["password"] = p
 		out["source"] = "cmd_config"
 	}
 	return out
+}
+
+// extractInitialPasswordFromLog 从 AstrBot 启动日志提取初始密码。
+// AstrBot 首次启动打印: "➜  Initial password: xxxxx" 后从内存清除; config 只存哈希。
+func extractInitialPasswordFromLog(cfg *config.Config) string {
+	logPath := cfg.Logs.AstrbotStdout
+	if logPath == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	// 兼容带 ANSI 色码/不带前缀的写法
+	patterns := []string{
+		"Initial password: ",
+		"Initial password：",
+		"初始密码: ",
+	}
+	for _, pat := range patterns {
+		if idx := strings.Index(string(raw), pat); idx >= 0 {
+			rest := string(raw)[idx+len(pat):]
+			// // 取到行尾 (去掉 \r\n 与尾部 ANSI 码)
+			if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+				rest = rest[:nl]
+			}
+			pw := strings.TrimSpace(rest)
+			// 去掉可能残留的 ANSI 转义
+			pw = stripAnsi(pw)
+			if len(pw) >= 6 && len(pw) <= 64 {
+				return pw
+			}
+		}
+	}
+	return ""
+}
+
+// stripAnsi 去除 ANSI 转义序列 (\\x1b[...m 等)
+func stripAnsi(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			i++ // skip 'm'
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // historyRoomInfos 从 messages.jsonl 提取历史聊过的群 (按条数降序)
